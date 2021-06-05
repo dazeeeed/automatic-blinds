@@ -1,0 +1,2793 @@
+   1               		.file	"main.c"
+   2               	__SP_H__ = 0x3e
+   3               	__SP_L__ = 0x3d
+   4               	__SREG__ = 0x3f
+   5               	__tmp_reg__ = 0
+   6               	__zero_reg__ = 1
+   7               		.text
+   8               	.Ltext0:
+   9               		.cfi_sections	.debug_frame
+  10               		.section	.rodata.str1.1,"aMS",@progbits,1
+  11               	.LC0:
+  12 0000 4461 7465 		.string	"Date: %02d/%02d/20%02d"
+  12      3A20 2530 
+  12      3264 2F25 
+  12      3032 642F 
+  12      3230 2530 
+  13               	.LC1:
+  14 0017 5469 6D65 		.string	"Time: %02d:%02d:%02d"
+  14      3A20 2530 
+  14      3264 3A25 
+  14      3032 643A 
+  14      2530 3264 
+  15               		.text
+  16               	.global	__vector_1
+  18               	__vector_1:
+  19               	.LFB8:
+  20               		.file 1 "main.c"
+   1:main.c        **** /* File: PROJECT
+   2:main.c        **** *
+   3:main.c        **** * Created on: 06/2021
+   4:main.c        **** * Author: Krzysztof Palmi <01141448@pw.edu.pl>
+   5:main.c        **** */
+   6:main.c        **** #ifndef __AVR_ATmega32__
+   7:main.c        **** 	#define __AVR_ATmega32__
+   8:main.c        **** #endif
+   9:main.c        **** 
+  10:main.c        **** /*
+  11:main.c        **** Rejestr TWBR = (16MHz / (100kHz) - 16)/2
+  12:main.c        **** ---------------------------------------
+  13:main.c        **** PODLACZENIE: 
+  14:main.c        **** LCD : RS -> PA2, E -> PA3, D4-D7 -> PA4-PA7
+  15:main.c        **** CLK -> PD2
+  16:main.c        **** S1-S5 -> PB7-PB3
+  17:main.c        **** S8 -> PC0
+  18:main.c        **** 
+  19:main.c        **** */ 
+  20:main.c        **** 
+  21:main.c        **** #include <avr/io.h>
+  22:main.c        **** #include <avr/interrupt.h>
+  23:main.c        **** #include <stdio.h>
+  24:main.c        **** #include <string.h> // do czesci 2
+  25:main.c        **** #include "twi.h"
+  26:main.c        **** #include "rtc.h"
+  27:main.c        **** #include "lcd.h"
+  28:main.c        **** 
+  29:main.c        **** #define LED			PB0
+  30:main.c        **** #define SWITCH_EDIT PB3
+  31:main.c        **** #define SWITCH_UP 	PB4
+  32:main.c        **** #define SWITCH_DOWN PB5
+  33:main.c        **** #define SWITCH_NEXT PB6
+  34:main.c        **** #define SWITCH_SET 	PB7
+  35:main.c        **** #define SWITCH_BLINDS PC0
+  36:main.c        **** 
+  37:main.c        **** #define TURN_ON_LED		(PORTB &= ~(1<<LED))
+  38:main.c        **** #define TURN_OFF_LED	(PORTB |= (1<<LED))
+  39:main.c        **** 
+  40:main.c        **** volatile uint8_t update_data_from_ISR = 1, check_buttons = 0, editing_mode = 0;
+  41:main.c        **** volatile uint8_t timer2_counter = 0;
+  42:main.c        **** volatile uint8_t blinds_editing_mode = 0, edited_blinds = 1;
+  43:main.c        **** volatile uint16_t shading_time = 0;
+  44:main.c        **** 
+  45:main.c        **** const uint16_t SHADING = 500;//9546;	// 95,46s for 2m blinds
+  46:main.c        **** 
+  47:main.c        **** uint8_t currently_edited = 0;
+  48:main.c        **** uint8_t step = 0;
+  49:main.c        **** uint8_t direction = 0;
+  50:main.c        **** uint8_t motor_state = 0;
+  51:main.c        **** 
+  52:main.c        **** 
+  53:main.c        **** struct datetime current_date ={
+  54:main.c        **** 	.sec = 	0,		// 5
+  55:main.c        **** 	.min = 	0,		// 4
+  56:main.c        **** 	.hour = 00,		// 3
+  57:main.c        **** 	.day = 	01,		// 0
+  58:main.c        **** 	.weekday = 01,
+  59:main.c        **** 	.month = 01,	// 1
+  60:main.c        **** 	.year = 21		// 2
+  61:main.c        **** };
+  62:main.c        **** //TODO change to normal hour later like 7:00 up
+  63:main.c        **** struct datetime blinds_morning ={
+  64:main.c        **** 	.sec = 	30,		
+  65:main.c        **** 	.min = 	0,		
+  66:main.c        **** 	.hour = 0,		
+  67:main.c        **** 	.day = 	01,		// not used
+  68:main.c        **** 	.weekday = 01,	// not used
+  69:main.c        **** 	.month = 01,	// not used
+  70:main.c        **** 	.year = 21		// not used
+  71:main.c        **** };
+  72:main.c        **** 
+  73:main.c        **** //TODO change to normal hour later like 21:00 down
+  74:main.c        **** struct datetime blinds_night ={
+  75:main.c        **** 	.sec = 	40,		
+  76:main.c        **** 	.min = 	0,		
+  77:main.c        **** 	.hour = 0,		
+  78:main.c        **** 	.day = 	01,		// not used
+  79:main.c        **** 	.weekday = 01,	// not used
+  80:main.c        **** 	.month = 01,	// not used
+  81:main.c        **** 	.year = 21		// not used
+  82:main.c        **** };
+  83:main.c        **** 
+  84:main.c        **** ISR(INT0_vect){ //1s
+  21               		.loc 1 84 15 view -0
+  22               		.cfi_startproc
+  23 0000 1F92      		push r1
+  24               	.LCFI0:
+  25               		.cfi_def_cfa_offset 3
+  26               		.cfi_offset 1, -2
+  27 0002 0F92      		push r0
+  28               	.LCFI1:
+  29               		.cfi_def_cfa_offset 4
+  30               		.cfi_offset 0, -3
+  31 0004 0FB6      		in r0,__SREG__
+  32 0006 0F92      		push r0
+  33 0008 1124      		clr __zero_reg__
+  34 000a 2F93      		push r18
+  35               	.LCFI2:
+  36               		.cfi_def_cfa_offset 5
+  37               		.cfi_offset 18, -4
+  38 000c 3F93      		push r19
+  39               	.LCFI3:
+  40               		.cfi_def_cfa_offset 6
+  41               		.cfi_offset 19, -5
+  42 000e 4F93      		push r20
+  43               	.LCFI4:
+  44               		.cfi_def_cfa_offset 7
+  45               		.cfi_offset 20, -6
+  46 0010 5F93      		push r21
+  47               	.LCFI5:
+  48               		.cfi_def_cfa_offset 8
+  49               		.cfi_offset 21, -7
+  50 0012 6F93      		push r22
+  51               	.LCFI6:
+  52               		.cfi_def_cfa_offset 9
+  53               		.cfi_offset 22, -8
+  54 0014 7F93      		push r23
+  55               	.LCFI7:
+  56               		.cfi_def_cfa_offset 10
+  57               		.cfi_offset 23, -9
+  58 0016 8F93      		push r24
+  59               	.LCFI8:
+  60               		.cfi_def_cfa_offset 11
+  61               		.cfi_offset 24, -10
+  62 0018 9F93      		push r25
+  63               	.LCFI9:
+  64               		.cfi_def_cfa_offset 12
+  65               		.cfi_offset 25, -11
+  66 001a AF93      		push r26
+  67               	.LCFI10:
+  68               		.cfi_def_cfa_offset 13
+  69               		.cfi_offset 26, -12
+  70 001c BF93      		push r27
+  71               	.LCFI11:
+  72               		.cfi_def_cfa_offset 14
+  73               		.cfi_offset 27, -13
+  74 001e EF93      		push r30
+  75               	.LCFI12:
+  76               		.cfi_def_cfa_offset 15
+  77               		.cfi_offset 30, -14
+  78 0020 FF93      		push r31
+  79               	.LCFI13:
+  80               		.cfi_def_cfa_offset 16
+  81               		.cfi_offset 31, -15
+  82 0022 CF93      		push r28
+  83               	.LCFI14:
+  84               		.cfi_def_cfa_offset 17
+  85               		.cfi_offset 28, -16
+  86 0024 DF93      		push r29
+  87               	.LCFI15:
+  88               		.cfi_def_cfa_offset 18
+  89               		.cfi_offset 29, -17
+  90 0026 CDB7      		in r28,__SP_L__
+  91 0028 DEB7      		in r29,__SP_H__
+  92               	.LCFI16:
+  93               		.cfi_def_cfa_register 28
+  94 002a 2797      		sbiw r28,7
+  95               	.LCFI17:
+  96               		.cfi_def_cfa_offset 25
+  97 002c DEBF      		out __SP_H__,r29
+  98 002e CDBF      		out __SP_L__,r28
+  99               	/* prologue: Signal */
+ 100               	/* frame size = 7 */
+ 101               	/* stack size = 24 */
+ 102               	.L__stack_usage = 24
+  85:main.c        **** 	struct datetime dt;
+ 103               		.loc 1 85 2 view .LVU1
+  86:main.c        **** 	rtc_get_date_time(&dt);
+ 104               		.loc 1 86 2 view .LVU2
+ 105 0030 CE01      		movw r24,r28
+ 106 0032 0196      		adiw r24,1
+ 107 0034 0E94 0000 		call rtc_get_date_time
+ 108               	.LVL0:
+  87:main.c        **** 	if(update_data_from_ISR){
+ 109               		.loc 1 87 2 view .LVU3
+ 110               		.loc 1 87 5 is_stmt 0 view .LVU4
+ 111 0038 8091 0000 		lds r24,update_data_from_ISR
+ 112               		.loc 1 87 4 view .LVU5
+ 113 003c 8823      		tst r24
+ 114 003e 01F0      		breq .L2
+  88:main.c        **** 		lcd_set_xy(0,0);
+ 115               		.loc 1 88 3 is_stmt 1 view .LVU6
+ 116 0040 60E0      		ldi r22,0
+ 117 0042 80E0      		ldi r24,0
+ 118 0044 0E94 0000 		call lcd_set_xy
+ 119               	.LVL1:
+  89:main.c        **** 		printf("Date: %02d/%02d/20%02d", dt.day, dt.month, dt.year);
+ 120               		.loc 1 89 3 view .LVU7
+ 121 0048 8F81      		ldd r24,Y+7
+ 122 004a 1F92      		push __zero_reg__
+ 123 004c 8F93      		push r24
+ 124 004e 8E81      		ldd r24,Y+6
+ 125 0050 1F92      		push __zero_reg__
+ 126 0052 8F93      		push r24
+ 127 0054 8C81      		ldd r24,Y+4
+ 128 0056 1F92      		push __zero_reg__
+ 129 0058 8F93      		push r24
+ 130 005a 80E0      		ldi r24,lo8(.LC0)
+ 131 005c 90E0      		ldi r25,hi8(.LC0)
+ 132 005e 9F93      		push r25
+ 133 0060 8F93      		push r24
+ 134 0062 0E94 0000 		call printf
+ 135               	.LVL2:
+  90:main.c        **** 		lcd_set_xy(1,0);
+ 136               		.loc 1 90 3 view .LVU8
+ 137 0066 60E0      		ldi r22,0
+ 138 0068 81E0      		ldi r24,lo8(1)
+ 139 006a 0E94 0000 		call lcd_set_xy
+ 140               	.LVL3:
+  91:main.c        **** 		printf("Time: %02d:%02d:%02d", dt.hour, dt.min, dt.sec);
+ 141               		.loc 1 91 3 view .LVU9
+ 142 006e 8B81      		ldd r24,Y+3
+ 143 0070 1F92      		push __zero_reg__
+ 144 0072 8F93      		push r24
+ 145 0074 8A81      		ldd r24,Y+2
+ 146 0076 1F92      		push __zero_reg__
+ 147 0078 8F93      		push r24
+ 148 007a 8981      		ldd r24,Y+1
+ 149 007c 1F92      		push __zero_reg__
+ 150 007e 8F93      		push r24
+ 151 0080 80E0      		ldi r24,lo8(.LC1)
+ 152 0082 90E0      		ldi r25,hi8(.LC1)
+ 153 0084 9F93      		push r25
+ 154 0086 8F93      		push r24
+ 155 0088 0E94 0000 		call printf
+ 156               	.LVL4:
+ 157 008c 0FB6      		in __tmp_reg__,__SREG__
+ 158 008e F894      		cli
+ 159 0090 DEBF      		out __SP_H__,r29
+ 160 0092 0FBE      		out __SREG__,__tmp_reg__
+ 161 0094 CDBF      		out __SP_L__,r28
+ 162               	.L2:
+  92:main.c        **** 	}
+  93:main.c        **** 	
+  94:main.c        **** 	if(	(dt.hour == blinds_morning.hour) &
+ 163               		.loc 1 94 2 view .LVU10
+ 164               		.loc 1 94 9 is_stmt 0 view .LVU11
+ 165 0096 2981      		ldd r18,Y+1
+  95:main.c        **** 	 		(dt.min == blinds_morning.min) &
+ 166               		.loc 1 95 8 view .LVU12
+ 167 0098 3A81      		ldd r19,Y+2
+  96:main.c        **** 	 		(dt.sec == blinds_morning.sec)){
+ 168               		.loc 1 96 8 view .LVU13
+ 169 009a 9B81      		ldd r25,Y+3
+  94:main.c        **** 	 		(dt.min == blinds_morning.min) &
+ 170               		.loc 1 94 39 view .LVU14
+ 171 009c 81E0      		ldi r24,lo8(1)
+ 172 009e 4091 0000 		lds r20,blinds_morning
+ 173 00a2 4213      		cpse r20,r18
+ 174 00a4 80E0      		ldi r24,0
+ 175               	.L4:
+ 176 00a6 41E0      		ldi r20,lo8(1)
+ 177 00a8 5091 0000 		lds r21,blinds_morning+1
+ 178 00ac 5313      		cpse r21,r19
+ 179 00ae 40E0      		ldi r20,0
+ 180               	.L5:
+ 181 00b0 8423      		and r24,r20
+  94:main.c        **** 	 		(dt.min == blinds_morning.min) &
+ 182               		.loc 1 94 4 view .LVU15
+ 183 00b2 01F0      		breq .L3
+ 184               		.loc 1 96 13 view .LVU16
+ 185 00b4 8091 0000 		lds r24,blinds_morning+2
+ 186 00b8 8913      		cpse r24,r25
+ 187 00ba 00C0      		rjmp .L3
+  97:main.c        **** 		motor_state = 1;
+ 188               		.loc 1 97 3 is_stmt 1 view .LVU17
+ 189               		.loc 1 97 15 is_stmt 0 view .LVU18
+ 190 00bc 81E0      		ldi r24,lo8(1)
+ 191 00be 8093 0000 		sts motor_state,r24
+  98:main.c        **** 		direction = 0;
+ 192               		.loc 1 98 3 is_stmt 1 view .LVU19
+ 193               		.loc 1 98 13 is_stmt 0 view .LVU20
+ 194 00c2 1092 0000 		sts direction,__zero_reg__
+ 195               	.L1:
+ 196               	/* epilogue start */
+  99:main.c        **** 	} else if((dt.hour == blinds_night.hour) &
+ 100:main.c        **** 	 		(dt.min == blinds_night.min) &
+ 101:main.c        **** 	 		(dt.sec == blinds_night.sec)){
+ 102:main.c        **** 		motor_state = 1;
+ 103:main.c        **** 		direction = 1;
+ 104:main.c        **** 	}
+ 105:main.c        **** }
+ 197               		.loc 1 105 1 view .LVU21
+ 198 00c6 2796      		adiw r28,7
+ 199 00c8 0FB6      		in __tmp_reg__,__SREG__
+ 200 00ca F894      		cli
+ 201 00cc DEBF      		out __SP_H__,r29
+ 202 00ce 0FBE      		out __SREG__,__tmp_reg__
+ 203 00d0 CDBF      		out __SP_L__,r28
+ 204 00d2 DF91      		pop r29
+ 205 00d4 CF91      		pop r28
+ 206 00d6 FF91      		pop r31
+ 207 00d8 EF91      		pop r30
+ 208 00da BF91      		pop r27
+ 209 00dc AF91      		pop r26
+ 210 00de 9F91      		pop r25
+ 211 00e0 8F91      		pop r24
+ 212 00e2 7F91      		pop r23
+ 213 00e4 6F91      		pop r22
+ 214 00e6 5F91      		pop r21
+ 215 00e8 4F91      		pop r20
+ 216 00ea 3F91      		pop r19
+ 217 00ec 2F91      		pop r18
+ 218 00ee 0F90      		pop r0
+ 219 00f0 0FBE      		out __SREG__,r0
+ 220 00f2 0F90      		pop r0
+ 221 00f4 1F90      		pop r1
+ 222 00f6 1895      		reti
+ 223               	.L3:
+  99:main.c        **** 	} else if((dt.hour == blinds_night.hour) &
+ 224               		.loc 1 99 9 is_stmt 1 view .LVU22
+  99:main.c        **** 	} else if((dt.hour == blinds_night.hour) &
+ 225               		.loc 1 99 43 is_stmt 0 view .LVU23
+ 226 00f8 81E0      		ldi r24,lo8(1)
+ 227 00fa 4091 0000 		lds r20,blinds_night
+ 228 00fe 4213      		cpse r20,r18
+ 229 0100 80E0      		ldi r24,0
+ 230               	.L8:
+ 231 0102 21E0      		ldi r18,lo8(1)
+ 232 0104 4091 0000 		lds r20,blinds_night+1
+ 233 0108 4313      		cpse r20,r19
+ 234 010a 20E0      		ldi r18,0
+ 235               	.L9:
+ 236 010c 8223      		and r24,r18
+  99:main.c        **** 	} else if((dt.hour == blinds_night.hour) &
+ 237               		.loc 1 99 11 view .LVU24
+ 238 010e 01F0      		breq .L1
+ 101:main.c        **** 		motor_state = 1;
+ 239               		.loc 1 101 13 view .LVU25
+ 240 0110 8091 0000 		lds r24,blinds_night+2
+ 241 0114 8913      		cpse r24,r25
+ 242 0116 00C0      		rjmp .L1
+ 102:main.c        **** 		direction = 1;
+ 243               		.loc 1 102 3 is_stmt 1 view .LVU26
+ 102:main.c        **** 		direction = 1;
+ 244               		.loc 1 102 15 is_stmt 0 view .LVU27
+ 245 0118 81E0      		ldi r24,lo8(1)
+ 246 011a 8093 0000 		sts motor_state,r24
+ 103:main.c        **** 	}
+ 247               		.loc 1 103 3 is_stmt 1 view .LVU28
+ 103:main.c        **** 	}
+ 248               		.loc 1 103 13 is_stmt 0 view .LVU29
+ 249 011e 8093 0000 		sts direction,r24
+ 250               		.loc 1 105 1 view .LVU30
+ 251 0122 00C0      		rjmp .L1
+ 252               		.cfi_endproc
+ 253               	.LFE8:
+ 255               	.global	__vector_4
+ 257               	__vector_4:
+ 258               	.LFB9:
+ 106:main.c        **** 
+ 107:main.c        **** ISR(TIMER2_COMP_vect){ // set to 0,01s
+ 259               		.loc 1 107 22 is_stmt 1 view -0
+ 260               		.cfi_startproc
+ 261 0124 1F92 1FB6 		__gcc_isr 1
+ 261      1F92 1124 
+ 261      2F93 
+ 262 012e 8F93      		push r24
+ 263               	.LCFI18:
+ 264               		.cfi_def_cfa_offset 3
+ 265               		.cfi_offset 24, -2
+ 266 0130 9F93      		push r25
+ 267               	.LCFI19:
+ 268               		.cfi_def_cfa_offset 4
+ 269               		.cfi_offset 25, -3
+ 270               	/* prologue: Signal */
+ 271               	/* frame size = 0 */
+ 272               	/* stack size = 2...6 */
+ 273               	.L__stack_usage = 2 + __gcc_isr.n_pushed
+ 108:main.c        **** 	if(timer2_counter == 10){
+ 274               		.loc 1 108 2 view .LVU32
+ 275               		.loc 1 108 20 is_stmt 0 view .LVU33
+ 276 0132 8091 0000 		lds r24,timer2_counter
+ 277               		.loc 1 108 4 view .LVU34
+ 278 0136 8A30      		cpi r24,lo8(10)
+ 279 0138 01F4      		brne .L25
+ 109:main.c        **** 		check_buttons = 1;		
+ 280               		.loc 1 109 3 is_stmt 1 view .LVU35
+ 281               		.loc 1 109 17 is_stmt 0 view .LVU36
+ 282 013a 81E0      		ldi r24,lo8(1)
+ 283 013c 8093 0000 		sts check_buttons,r24
+ 110:main.c        **** 		timer2_counter = 0;
+ 284               		.loc 1 110 3 is_stmt 1 view .LVU37
+ 285               		.loc 1 110 18 is_stmt 0 view .LVU38
+ 286 0140 1092 0000 		sts timer2_counter,__zero_reg__
+ 287               	.L26:
+ 111:main.c        **** 	} else{
+ 112:main.c        **** 		timer2_counter++;
+ 113:main.c        **** 		check_buttons = 0; 
+ 114:main.c        **** 	}
+ 115:main.c        **** 	if(motor_state){
+ 288               		.loc 1 115 2 is_stmt 1 view .LVU39
+ 289               		.loc 1 115 4 is_stmt 0 view .LVU40
+ 290 0144 8091 0000 		lds r24,motor_state
+ 291 0148 8823      		tst r24
+ 292 014a 01F0      		breq .L24
+ 116:main.c        **** 		if(shading_time == SHADING){
+ 293               		.loc 1 116 3 is_stmt 1 view .LVU41
+ 294               		.loc 1 116 19 is_stmt 0 view .LVU42
+ 295 014c 8091 0000 		lds r24,shading_time
+ 296 0150 9091 0000 		lds r25,shading_time+1
+ 297               		.loc 1 116 5 view .LVU43
+ 298 0154 843F      		cpi r24,-12
+ 299 0156 9140      		sbci r25,1
+ 300 0158 01F4      		brne .L28
+ 117:main.c        **** 			motor_state = 0;
+ 301               		.loc 1 117 4 is_stmt 1 view .LVU44
+ 302               		.loc 1 117 16 is_stmt 0 view .LVU45
+ 303 015a 1092 0000 		sts motor_state,__zero_reg__
+ 118:main.c        **** 			shading_time = 0;
+ 304               		.loc 1 118 4 is_stmt 1 view .LVU46
+ 305               		.loc 1 118 17 is_stmt 0 view .LVU47
+ 306 015e 1092 0000 		sts shading_time+1,__zero_reg__
+ 307 0162 1092 0000 		sts shading_time,__zero_reg__
+ 308               	.L24:
+ 309               	/* epilogue start */
+ 119:main.c        **** 		} else{
+ 120:main.c        **** 			shading_time++;
+ 121:main.c        **** 		}
+ 122:main.c        **** 	}
+ 123:main.c        **** }
+ 310               		.loc 1 123 1 view .LVU48
+ 311 0166 9F91      		pop r25
+ 312 0168 8F91      		pop r24
+ 313 016a 2F91 1F90 		__gcc_isr 2
+ 313      1FBE 1F90 
+ 314 0172 1895      		reti
+ 315               	.L25:
+ 112:main.c        **** 		check_buttons = 0; 
+ 316               		.loc 1 112 3 is_stmt 1 view .LVU49
+ 112:main.c        **** 		check_buttons = 0; 
+ 317               		.loc 1 112 17 is_stmt 0 view .LVU50
+ 318 0174 8091 0000 		lds r24,timer2_counter
+ 319 0178 8F5F      		subi r24,lo8(-(1))
+ 320 017a 8093 0000 		sts timer2_counter,r24
+ 113:main.c        **** 	}
+ 321               		.loc 1 113 3 is_stmt 1 view .LVU51
+ 113:main.c        **** 	}
+ 322               		.loc 1 113 17 is_stmt 0 view .LVU52
+ 323 017e 1092 0000 		sts check_buttons,__zero_reg__
+ 324 0182 00C0      		rjmp .L26
+ 325               	.L28:
+ 120:main.c        **** 		}
+ 326               		.loc 1 120 4 is_stmt 1 view .LVU53
+ 120:main.c        **** 		}
+ 327               		.loc 1 120 16 is_stmt 0 view .LVU54
+ 328 0184 8091 0000 		lds r24,shading_time
+ 329 0188 9091 0000 		lds r25,shading_time+1
+ 330 018c 0196      		adiw r24,1
+ 331 018e 9093 0000 		sts shading_time+1,r25
+ 332 0192 8093 0000 		sts shading_time,r24
+ 333               		.loc 1 123 1 view .LVU55
+ 334 0196 00C0      		rjmp .L24
+ 335               		__gcc_isr 0,r18
+ 336               		.cfi_endproc
+ 337               	.LFE9:
+ 339               	.global	print_date
+ 341               	print_date:
+ 342               	.LFB10:
+ 124:main.c        **** 
+ 125:main.c        **** void print_date(struct datetime dt){
+ 343               		.loc 1 125 36 is_stmt 1 view -0
+ 344               		.cfi_startproc
+ 345 0198 CF93      		push r28
+ 346               	.LCFI20:
+ 347               		.cfi_def_cfa_offset 3
+ 348               		.cfi_offset 28, -2
+ 349 019a DF93      		push r29
+ 350               	.LCFI21:
+ 351               		.cfi_def_cfa_offset 4
+ 352               		.cfi_offset 29, -3
+ 353 019c 00D0      		rcall .
+ 354 019e 00D0      		rcall .
+ 355 01a0 00D0      		rcall .
+ 356 01a2 0F92      		push __tmp_reg__
+ 357               	.LCFI22:
+ 358               		.cfi_def_cfa_offset 11
+ 359 01a4 CDB7      		in r28,__SP_L__
+ 360 01a6 DEB7      		in r29,__SP_H__
+ 361               	.LCFI23:
+ 362               		.cfi_def_cfa_register 28
+ 363               	/* prologue: function */
+ 364               	/* frame size = 7 */
+ 365               	/* stack size = 9 */
+ 366               	.L__stack_usage = 9
+ 367 01a8 2983      		std Y+1,r18
+ 368 01aa 3A83      		std Y+2,r19
+ 369 01ac 4B83      		std Y+3,r20
+ 370 01ae 5C83      		std Y+4,r21
+ 371 01b0 7E83      		std Y+6,r23
+ 372 01b2 8F83      		std Y+7,r24
+ 126:main.c        **** 	lcd_clear();
+ 373               		.loc 1 126 2 view .LVU57
+ 374 01b4 0E94 0000 		call lcd_clear
+ 375               	.LVL5:
+ 127:main.c        **** 	lcd_set_xy(0,0);
+ 376               		.loc 1 127 2 view .LVU58
+ 377 01b8 60E0      		ldi r22,0
+ 378 01ba 80E0      		ldi r24,0
+ 379 01bc 0E94 0000 		call lcd_set_xy
+ 380               	.LVL6:
+ 128:main.c        **** 	printf("Date: %02d/%02d/20%02d", dt.day, dt.month, dt.year);
+ 381               		.loc 1 128 2 view .LVU59
+ 382 01c0 8F81      		ldd r24,Y+7
+ 383 01c2 1F92      		push __zero_reg__
+ 384 01c4 8F93      		push r24
+ 385 01c6 8E81      		ldd r24,Y+6
+ 386 01c8 1F92      		push __zero_reg__
+ 387 01ca 8F93      		push r24
+ 388 01cc 8C81      		ldd r24,Y+4
+ 389 01ce 1F92      		push __zero_reg__
+ 390 01d0 8F93      		push r24
+ 391 01d2 80E0      		ldi r24,lo8(.LC0)
+ 392 01d4 90E0      		ldi r25,hi8(.LC0)
+ 393 01d6 9F93      		push r25
+ 394 01d8 8F93      		push r24
+ 395 01da 0E94 0000 		call printf
+ 396               	.LVL7:
+ 129:main.c        **** 	lcd_set_xy(1,0);
+ 397               		.loc 1 129 2 view .LVU60
+ 398 01de 60E0      		ldi r22,0
+ 399 01e0 81E0      		ldi r24,lo8(1)
+ 400 01e2 0E94 0000 		call lcd_set_xy
+ 401               	.LVL8:
+ 130:main.c        **** 	printf("Time: %02d:%02d:%02d", dt.hour, dt.min, dt.sec);
+ 402               		.loc 1 130 2 view .LVU61
+ 403 01e6 8B81      		ldd r24,Y+3
+ 404 01e8 1F92      		push __zero_reg__
+ 405 01ea 8F93      		push r24
+ 406 01ec 8A81      		ldd r24,Y+2
+ 407 01ee 1F92      		push __zero_reg__
+ 408 01f0 8F93      		push r24
+ 409 01f2 8981      		ldd r24,Y+1
+ 410 01f4 1F92      		push __zero_reg__
+ 411 01f6 8F93      		push r24
+ 412 01f8 80E0      		ldi r24,lo8(.LC1)
+ 413 01fa 90E0      		ldi r25,hi8(.LC1)
+ 414 01fc 9F93      		push r25
+ 415 01fe 8F93      		push r24
+ 416 0200 0E94 0000 		call printf
+ 417               	.LVL9:
+ 131:main.c        **** }
+ 418               		.loc 1 131 1 is_stmt 0 view .LVU62
+ 419 0204 0FB6      		in __tmp_reg__,__SREG__
+ 420 0206 F894      		cli
+ 421 0208 DEBF      		out __SP_H__,r29
+ 422 020a 0FBE      		out __SREG__,__tmp_reg__
+ 423 020c CDBF      		out __SP_L__,r28
+ 424               	/* epilogue start */
+ 425 020e 2796      		adiw r28,7
+ 426 0210 0FB6      		in __tmp_reg__,__SREG__
+ 427 0212 F894      		cli
+ 428 0214 DEBF      		out __SP_H__,r29
+ 429 0216 0FBE      		out __SREG__,__tmp_reg__
+ 430 0218 CDBF      		out __SP_L__,r28
+ 431 021a DF91      		pop r29
+ 432 021c CF91      		pop r28
+ 433 021e 0895      		ret
+ 434               		.cfi_endproc
+ 435               	.LFE10:
+ 437               	.global	change_full_date
+ 439               	change_full_date:
+ 440               	.LVL10:
+ 441               	.LFB11:
+ 132:main.c        **** 
+ 133:main.c        **** void change_full_date(uint8_t currently_edited, char direction){
+ 442               		.loc 1 133 64 is_stmt 1 view -0
+ 443               		.cfi_startproc
+ 444               	/* prologue: function */
+ 445               	/* frame size = 0 */
+ 446               	/* stack size = 0 */
+ 447               	.L__stack_usage = 0
+ 134:main.c        **** 	// direction: (1) - add; (-1) - subtract
+ 135:main.c        **** 	if(direction == '+'){
+ 448               		.loc 1 135 2 view .LVU64
+ 449               		.loc 1 135 4 is_stmt 0 view .LVU65
+ 450 0220 6B32      		cpi r22,lo8(43)
+ 451 0222 01F0      		breq .+2
+ 452 0224 00C0      		rjmp .L34
+ 136:main.c        **** 		switch(currently_edited){
+ 453               		.loc 1 136 3 is_stmt 1 view .LVU66
+ 454 0226 8330      		cpi r24,lo8(3)
+ 455 0228 01F4      		brne .+2
+ 456 022a 00C0      		rjmp .L35
+ 457 022c 00F4      		brsh .L36
+ 458 022e 8130      		cpi r24,lo8(1)
+ 459 0230 01F4      		brne .+2
+ 460 0232 00C0      		rjmp .L37
+ 461 0234 8230      		cpi r24,lo8(2)
+ 462 0236 01F4      		brne .+2
+ 463 0238 00C0      		rjmp .L38
+ 464 023a 8823      		tst r24
+ 465 023c 01F0      		breq .L39
+ 466 023e 0895      		ret
+ 467               	.L36:
+ 468 0240 8430      		cpi r24,lo8(4)
+ 469 0242 01F4      		brne .+2
+ 470 0244 00C0      		rjmp .L41
+ 471 0246 8530      		cpi r24,lo8(5)
+ 472 0248 01F4      		brne .+2
+ 473 024a 00C0      		rjmp .L42
+ 474 024c 0895      		ret
+ 475               	.L39:
+ 137:main.c        **** 			case 0:
+ 138:main.c        **** 				if((current_date.month == 1) | (current_date.month == 3)
+ 476               		.loc 1 138 5 view .LVU67
+ 477               		.loc 1 138 21 is_stmt 0 view .LVU68
+ 478 024e 2091 0000 		lds r18,current_date+5
+ 139:main.c        **** 				| (current_date.month == 5) | (current_date.month == 7) 
+ 140:main.c        **** 				| (current_date.month == 8) | (current_date.month == 10) 
+ 141:main.c        **** 				| (current_date.month == 12)){
+ 142:main.c        **** 					current_date.day = current_date.day % 31 + 1;
+ 479               		.loc 1 142 37 view .LVU69
+ 480 0252 3091 0000 		lds r19,current_date+3
+ 139:main.c        **** 				| (current_date.month == 5) | (current_date.month == 7) 
+ 481               		.loc 1 139 27 view .LVU70
+ 482 0256 81E0      		ldi r24,lo8(1)
+ 483               	.LVL11:
+ 139:main.c        **** 				| (current_date.month == 5) | (current_date.month == 7) 
+ 484               		.loc 1 139 27 view .LVU71
+ 485 0258 2530      		cpi r18,lo8(5)
+ 486 025a 01F0      		breq .L45
+ 487 025c 80E0      		ldi r24,0
+ 488               	.L45:
+ 140:main.c        **** 				| (current_date.month == 12)){
+ 489               		.loc 1 140 55 view .LVU72
+ 490 025e 91E0      		ldi r25,lo8(1)
+ 491 0260 2A30      		cpi r18,lo8(10)
+ 492 0262 01F0      		breq .L46
+ 493 0264 90E0      		ldi r25,0
+ 494               	.L46:
+ 138:main.c        **** 				| (current_date.month == 5) | (current_date.month == 7) 
+ 495               		.loc 1 138 7 view .LVU73
+ 496 0266 892B      		or r24,r25
+ 141:main.c        **** 					current_date.day = current_date.day % 31 + 1;
+ 497               		.loc 1 141 27 view .LVU74
+ 498 0268 91E0      		ldi r25,lo8(1)
+ 499 026a 2C30      		cpi r18,lo8(12)
+ 500 026c 01F0      		breq .L47
+ 501 026e 90E0      		ldi r25,0
+ 502               	.L47:
+ 138:main.c        **** 				| (current_date.month == 5) | (current_date.month == 7) 
+ 503               		.loc 1 138 7 view .LVU75
+ 504 0270 892B      		or r24,r25
+ 138:main.c        **** 				| (current_date.month == 5) | (current_date.month == 7) 
+ 505               		.loc 1 138 34 view .LVU76
+ 506 0272 41E0      		ldi r20,lo8(1)
+ 507 0274 922F      		mov r25,r18
+ 508 0276 9D7F      		andi r25,lo8(-3)
+ 509 0278 9130      		cpi r25,lo8(1)
+ 510 027a 01F0      		breq .L48
+ 511 027c 40E0      		ldi r20,0
+ 512               	.L48:
+ 138:main.c        **** 				| (current_date.month == 5) | (current_date.month == 7) 
+ 513               		.loc 1 138 7 view .LVU77
+ 514 027e 842B      		or r24,r20
+ 515 0280 01F4      		brne .L88
+ 139:main.c        **** 				| (current_date.month == 8) | (current_date.month == 10) 
+ 516               		.loc 1 139 55 view .LVU78
+ 517 0282 89EF      		ldi r24,lo8(-7)
+ 518 0284 820F      		add r24,r18
+ 519 0286 8230      		cpi r24,lo8(2)
+ 520 0288 00F4      		brsh .L154
+ 521               	.L88:
+ 522               		.loc 1 142 6 is_stmt 1 view .LVU79
+ 523               		.loc 1 142 47 is_stmt 0 view .LVU80
+ 524 028a 832F      		mov r24,r19
+ 525 028c 6FE1      		ldi r22,lo8(31)
+ 526               	.LVL12:
+ 527               	.L156:
+ 143:main.c        **** 				} else{
+ 144:main.c        **** 					if((current_date.month == 2) & (current_date.year % 4 == 0) & (current_date.year % 100 != 0)){
+ 145:main.c        **** 						current_date.day = current_date.day % 29 + 1;
+ 528               		.loc 1 145 48 view .LVU81
+ 529 028e 0E94 0000 		call __udivmodqi4
+ 530 0292 9F5F      		subi r25,lo8(-(1))
+ 531               		.loc 1 145 24 view .LVU82
+ 532 0294 9093 0000 		sts current_date+3,r25
+ 533 0298 0895      		ret
+ 534               	.LVL13:
+ 535               	.L154:
+ 144:main.c        **** 						current_date.day = current_date.day % 29 + 1;
+ 536               		.loc 1 144 6 is_stmt 1 view .LVU83
+ 144:main.c        **** 						current_date.day = current_date.day % 29 + 1;
+ 537               		.loc 1 144 50 is_stmt 0 view .LVU84
+ 538 029a 8091 0000 		lds r24,current_date+6
+ 144:main.c        **** 						current_date.day = current_date.day % 29 + 1;
+ 539               		.loc 1 144 35 view .LVU85
+ 540 029e 982F      		mov r25,r24
+ 541 02a0 9370      		andi r25,lo8(3)
+ 542 02a2 41E0      		ldi r20,lo8(1)
+ 543 02a4 01F0      		breq .L51
+ 544 02a6 40E0      		ldi r20,0
+ 545               	.L51:
+ 144:main.c        **** 						current_date.day = current_date.day % 29 + 1;
+ 546               		.loc 1 144 93 view .LVU86
+ 547 02a8 64E6      		ldi r22,lo8(100)
+ 548               	.LVL14:
+ 144:main.c        **** 						current_date.day = current_date.day % 29 + 1;
+ 549               		.loc 1 144 93 view .LVU87
+ 550 02aa 0E94 0000 		call __udivmodqi4
+ 551 02ae 81E0      		ldi r24,lo8(1)
+ 552 02b0 9111      		cpse r25,__zero_reg__
+ 553 02b2 00C0      		rjmp .L52
+ 554 02b4 80E0      		ldi r24,0
+ 555               	.L52:
+ 144:main.c        **** 						current_date.day = current_date.day % 29 + 1;
+ 556               		.loc 1 144 8 view .LVU88
+ 557 02b6 4823      		and r20,r24
+ 558               		.loc 1 145 48 view .LVU89
+ 559 02b8 832F      		mov r24,r19
+ 144:main.c        **** 						current_date.day = current_date.day % 29 + 1;
+ 560               		.loc 1 144 8 view .LVU90
+ 561 02ba 01F0      		breq .L50
+ 144:main.c        **** 						current_date.day = current_date.day % 29 + 1;
+ 562               		.loc 1 144 35 view .LVU91
+ 563 02bc 2230      		cpi r18,lo8(2)
+ 564 02be 01F4      		brne .L50
+ 565               		.loc 1 145 7 is_stmt 1 view .LVU92
+ 566               		.loc 1 145 48 is_stmt 0 view .LVU93
+ 567 02c0 6DE1      		ldi r22,lo8(29)
+ 568 02c2 00C0      		rjmp .L156
+ 569               	.L50:
+ 146:main.c        **** 					} else if(current_date.month == 2){
+ 570               		.loc 1 146 13 is_stmt 1 view .LVU94
+ 147:main.c        **** 						current_date.day = current_date.day % 28 + 1;
+ 571               		.loc 1 147 48 is_stmt 0 view .LVU95
+ 572 02c4 6CE1      		ldi r22,lo8(28)
+ 146:main.c        **** 					} else if(current_date.month == 2){
+ 573               		.loc 1 146 15 view .LVU96
+ 574 02c6 2230      		cpi r18,lo8(2)
+ 575 02c8 01F0      		breq .L156
+ 148:main.c        **** 					} else{
+ 149:main.c        **** 						current_date.day = current_date.day % 30 + 1;
+ 576               		.loc 1 149 7 is_stmt 1 view .LVU97
+ 577               		.loc 1 149 48 is_stmt 0 view .LVU98
+ 578 02ca 6EE1      		ldi r22,lo8(30)
+ 579 02cc 00C0      		rjmp .L156
+ 580               	.LVL15:
+ 581               	.L37:
+ 150:main.c        **** 					}	
+ 151:main.c        **** 				}						
+ 152:main.c        **** 				break;
+ 153:main.c        **** 			case 1:
+ 154:main.c        **** 				current_date.month = current_date.month % 12 + 1;
+ 582               		.loc 1 154 5 is_stmt 1 view .LVU99
+ 583               		.loc 1 154 50 is_stmt 0 view .LVU100
+ 584 02ce 8091 0000 		lds r24,current_date+5
+ 585               	.LVL16:
+ 586               		.loc 1 154 50 view .LVU101
+ 587 02d2 6CE0      		ldi r22,lo8(12)
+ 588               	.LVL17:
+ 589               		.loc 1 154 50 view .LVU102
+ 590 02d4 0E94 0000 		call __udivmodqi4
+ 591 02d8 9F5F      		subi r25,lo8(-(1))
+ 592               		.loc 1 154 24 view .LVU103
+ 593 02da 9093 0000 		sts current_date+5,r25
+ 155:main.c        **** 				if((current_date.month == 2) & (current_date.day >= 28)){
+ 594               		.loc 1 155 5 is_stmt 1 view .LVU104
+ 595               		.loc 1 155 34 is_stmt 0 view .LVU105
+ 596 02de 8091 0000 		lds r24,current_date+3
+ 597 02e2 8C31      		cpi r24,lo8(28)
+ 598 02e4 00F4      		brsh .+2
+ 599 02e6 00C0      		rjmp .L33
+ 600 02e8 9230      		cpi r25,lo8(2)
+ 601 02ea 01F0      		breq .+2
+ 602 02ec 00C0      		rjmp .L33
+ 603               	.L55:
+ 156:main.c        **** 					current_date.day = 28;
+ 604               		.loc 1 156 6 is_stmt 1 view .LVU106
+ 605               		.loc 1 156 23 is_stmt 0 view .LVU107
+ 606 02ee 8CE1      		ldi r24,lo8(28)
+ 607 02f0 8093 0000 		sts current_date+3,r24
+ 608 02f4 0895      		ret
+ 609               	.LVL18:
+ 610               	.L38:
+ 157:main.c        **** 				}
+ 158:main.c        **** 				break;
+ 159:main.c        **** 			case 2:
+ 160:main.c        **** 				current_date.year++;
+ 611               		.loc 1 160 5 is_stmt 1 view .LVU108
+ 612               		.loc 1 160 22 is_stmt 0 view .LVU109
+ 613 02f6 8091 0000 		lds r24,current_date+6
+ 614               	.LVL19:
+ 615               		.loc 1 160 22 view .LVU110
+ 616 02fa 8F5F      		subi r24,lo8(-(1))
+ 617               	.L84:
+ 161:main.c        **** 				break;
+ 162:main.c        **** 			case 3:
+ 163:main.c        **** 				current_date.hour = (current_date.hour + 1) % 24;
+ 164:main.c        **** 				break;
+ 165:main.c        **** 			case 4: 
+ 166:main.c        **** 				current_date.min = (current_date.min + 1) % 60;
+ 167:main.c        **** 				break;
+ 168:main.c        **** 			case 5:
+ 169:main.c        **** 				current_date.sec = (current_date.sec + 1) % 60;
+ 170:main.c        **** 				break;
+ 171:main.c        **** 		}
+ 172:main.c        **** 	} else if(direction == '-'){
+ 173:main.c        **** 		switch(currently_edited){
+ 174:main.c        **** 			case 0:
+ 175:main.c        **** 				if((current_date.month == 1) | (current_date.month == 3)
+ 176:main.c        **** 				| (current_date.month == 5) | (current_date.month == 7) 
+ 177:main.c        **** 				| (current_date.month == 8) | (current_date.month == 10) 
+ 178:main.c        **** 				| (current_date.month == 12)){
+ 179:main.c        **** 					current_date.day = (current_date.day > 1) ? current_date.day - 1 : 1;
+ 180:main.c        **** 				} else{
+ 181:main.c        **** 					if((current_date.month == 2) & (current_date.year % 4 == 0) & (current_date.year % 100 != 0)){
+ 182:main.c        **** 						current_date.day = (current_date.day > 1) ? current_date.day - 1 : 1;
+ 183:main.c        **** 					} else if(current_date.month == 2){
+ 184:main.c        **** 						current_date.day = (current_date.day > 1) ? current_date.day - 1 : 1;
+ 185:main.c        **** 					} else{
+ 186:main.c        **** 						current_date.day = (current_date.day > 1) ? current_date.day - 1 : 1;
+ 187:main.c        **** 					}	
+ 188:main.c        **** 				}						
+ 189:main.c        **** 				break;
+ 190:main.c        **** 			case 1:
+ 191:main.c        **** 				current_date.month = (current_date.month > 1) ? current_date.month - 1 : 1;
+ 192:main.c        **** 				if((current_date.month == 2) & (current_date.day >= 28)){
+ 193:main.c        **** 					current_date.day = 28;
+ 194:main.c        **** 				}
+ 195:main.c        **** 				break;
+ 196:main.c        **** 			case 2:
+ 197:main.c        **** 				current_date.year = (current_date.year > 0) ? current_date.year - 1 : 0;
+ 618               		.loc 1 197 23 discriminator 4 view .LVU111
+ 619 02fc 8093 0000 		sts current_date+6,r24
+ 198:main.c        **** 				break;
+ 620               		.loc 1 198 5 is_stmt 1 discriminator 4 view .LVU112
+ 621 0300 0895      		ret
+ 622               	.LVL20:
+ 623               	.L35:
+ 163:main.c        **** 				break;
+ 624               		.loc 1 163 5 view .LVU113
+ 163:main.c        **** 				break;
+ 625               		.loc 1 163 38 is_stmt 0 view .LVU114
+ 626 0302 8091 0000 		lds r24,current_date
+ 627               	.LVL21:
+ 163:main.c        **** 				break;
+ 628               		.loc 1 163 38 view .LVU115
+ 629 0306 90E0      		ldi r25,0
+ 163:main.c        **** 				break;
+ 630               		.loc 1 163 44 view .LVU116
+ 631 0308 0196      		adiw r24,1
+ 163:main.c        **** 				break;
+ 632               		.loc 1 163 49 view .LVU117
+ 633 030a 68E1      		ldi r22,lo8(24)
+ 634 030c 70E0      		ldi r23,0
+ 635               	.LVL22:
+ 163:main.c        **** 				break;
+ 636               		.loc 1 163 49 view .LVU118
+ 637 030e 0E94 0000 		call __divmodhi4
+ 638               	.L85:
+ 199:main.c        **** 			case 3:
+ 200:main.c        **** 				current_date.hour = (current_date.hour > 0) ? current_date.hour - 1 : 0;
+ 639               		.loc 1 200 23 discriminator 4 view .LVU119
+ 640 0312 8093 0000 		sts current_date,r24
+ 201:main.c        **** 				break;
+ 641               		.loc 1 201 5 is_stmt 1 discriminator 4 view .LVU120
+ 642 0316 0895      		ret
+ 643               	.LVL23:
+ 644               	.L41:
+ 166:main.c        **** 				break;
+ 645               		.loc 1 166 5 view .LVU121
+ 166:main.c        **** 				break;
+ 646               		.loc 1 166 37 is_stmt 0 view .LVU122
+ 647 0318 8091 0000 		lds r24,current_date+1
+ 648               	.LVL24:
+ 166:main.c        **** 				break;
+ 649               		.loc 1 166 37 view .LVU123
+ 650 031c 90E0      		ldi r25,0
+ 166:main.c        **** 				break;
+ 651               		.loc 1 166 42 view .LVU124
+ 652 031e 0196      		adiw r24,1
+ 166:main.c        **** 				break;
+ 653               		.loc 1 166 47 view .LVU125
+ 654 0320 6CE3      		ldi r22,lo8(60)
+ 655 0322 70E0      		ldi r23,0
+ 656               	.LVL25:
+ 166:main.c        **** 				break;
+ 657               		.loc 1 166 47 view .LVU126
+ 658 0324 0E94 0000 		call __divmodhi4
+ 659               	.L86:
+ 202:main.c        **** 			case 4: 
+ 203:main.c        **** 				current_date.min = (current_date.min > 0) ? current_date.min - 1 : 0;
+ 660               		.loc 1 203 22 discriminator 4 view .LVU127
+ 661 0328 8093 0000 		sts current_date+1,r24
+ 204:main.c        **** 				break;
+ 662               		.loc 1 204 5 is_stmt 1 discriminator 4 view .LVU128
+ 663 032c 0895      		ret
+ 664               	.LVL26:
+ 665               	.L42:
+ 169:main.c        **** 				break;
+ 666               		.loc 1 169 5 view .LVU129
+ 169:main.c        **** 				break;
+ 667               		.loc 1 169 37 is_stmt 0 view .LVU130
+ 668 032e 8091 0000 		lds r24,current_date+2
+ 669               	.LVL27:
+ 169:main.c        **** 				break;
+ 670               		.loc 1 169 37 view .LVU131
+ 671 0332 90E0      		ldi r25,0
+ 169:main.c        **** 				break;
+ 672               		.loc 1 169 42 view .LVU132
+ 673 0334 0196      		adiw r24,1
+ 169:main.c        **** 				break;
+ 674               		.loc 1 169 47 view .LVU133
+ 675 0336 6CE3      		ldi r22,lo8(60)
+ 676 0338 70E0      		ldi r23,0
+ 677               	.LVL28:
+ 169:main.c        **** 				break;
+ 678               		.loc 1 169 47 view .LVU134
+ 679 033a 0E94 0000 		call __divmodhi4
+ 680               	.L87:
+ 205:main.c        **** 			case 5:
+ 206:main.c        **** 				current_date.sec = (current_date.sec > 0 ) ? current_date.sec - 1 : 0;
+ 681               		.loc 1 206 22 discriminator 4 view .LVU135
+ 682 033e 8093 0000 		sts current_date+2,r24
+ 207:main.c        **** 				break;
+ 683               		.loc 1 207 5 is_stmt 1 discriminator 4 view .LVU136
+ 208:main.c        **** 		}
+ 209:main.c        **** 	}
+ 210:main.c        **** }
+ 684               		.loc 1 210 1 is_stmt 0 discriminator 4 view .LVU137
+ 685 0342 00C0      		rjmp .L33
+ 686               	.LVL29:
+ 687               	.L34:
+ 172:main.c        **** 		switch(currently_edited){
+ 688               		.loc 1 172 9 is_stmt 1 view .LVU138
+ 172:main.c        **** 		switch(currently_edited){
+ 689               		.loc 1 172 11 is_stmt 0 view .LVU139
+ 690 0344 6D32      		cpi r22,lo8(45)
+ 691 0346 01F0      		breq .+2
+ 692 0348 00C0      		rjmp .L33
+ 173:main.c        **** 			case 0:
+ 693               		.loc 1 173 3 is_stmt 1 view .LVU140
+ 694 034a 8330      		cpi r24,lo8(3)
+ 695 034c 01F4      		brne .+2
+ 696 034e 00C0      		rjmp .L60
+ 697 0350 00F4      		brsh .L61
+ 698 0352 8130      		cpi r24,lo8(1)
+ 699 0354 01F4      		brne .+2
+ 700 0356 00C0      		rjmp .L62
+ 701 0358 8230      		cpi r24,lo8(2)
+ 702 035a 01F4      		brne .+2
+ 703 035c 00C0      		rjmp .L63
+ 704 035e 8823      		tst r24
+ 705 0360 01F0      		breq .L64
+ 706 0362 0895      		ret
+ 707               	.L61:
+ 708 0364 8430      		cpi r24,lo8(4)
+ 709 0366 01F4      		brne .+2
+ 710 0368 00C0      		rjmp .L65
+ 711 036a 8530      		cpi r24,lo8(5)
+ 712 036c 01F4      		brne .+2
+ 713 036e 00C0      		rjmp .L66
+ 714 0370 0895      		ret
+ 715               	.L64:
+ 175:main.c        **** 				| (current_date.month == 5) | (current_date.month == 7) 
+ 716               		.loc 1 175 5 view .LVU141
+ 175:main.c        **** 				| (current_date.month == 5) | (current_date.month == 7) 
+ 717               		.loc 1 175 21 is_stmt 0 view .LVU142
+ 718 0372 3091 0000 		lds r19,current_date+5
+ 179:main.c        **** 				} else{
+ 719               		.loc 1 179 23 view .LVU143
+ 720 0376 2091 0000 		lds r18,current_date+3
+ 721 037a 2230      		cpi r18,lo8(2)
+ 722 037c 00F4      		brsh .L67
+ 723 037e 22E0      		ldi r18,lo8(2)
+ 724               	.L67:
+ 725 0380 2150      		subi r18,lo8(-(-1))
+ 176:main.c        **** 				| (current_date.month == 8) | (current_date.month == 10) 
+ 726               		.loc 1 176 27 view .LVU144
+ 727 0382 81E0      		ldi r24,lo8(1)
+ 728               	.LVL30:
+ 176:main.c        **** 				| (current_date.month == 8) | (current_date.month == 10) 
+ 729               		.loc 1 176 27 view .LVU145
+ 730 0384 3530      		cpi r19,lo8(5)
+ 731 0386 01F0      		breq .L70
+ 732 0388 80E0      		ldi r24,0
+ 733               	.L70:
+ 177:main.c        **** 				| (current_date.month == 12)){
+ 734               		.loc 1 177 55 view .LVU146
+ 735 038a 91E0      		ldi r25,lo8(1)
+ 736 038c 3A30      		cpi r19,lo8(10)
+ 737 038e 01F0      		breq .L71
+ 738 0390 90E0      		ldi r25,0
+ 739               	.L71:
+ 175:main.c        **** 				| (current_date.month == 5) | (current_date.month == 7) 
+ 740               		.loc 1 175 7 view .LVU147
+ 741 0392 892B      		or r24,r25
+ 178:main.c        **** 					current_date.day = (current_date.day > 1) ? current_date.day - 1 : 1;
+ 742               		.loc 1 178 27 view .LVU148
+ 743 0394 91E0      		ldi r25,lo8(1)
+ 744 0396 3C30      		cpi r19,lo8(12)
+ 745 0398 01F0      		breq .L72
+ 746 039a 90E0      		ldi r25,0
+ 747               	.L72:
+ 175:main.c        **** 				| (current_date.month == 5) | (current_date.month == 7) 
+ 748               		.loc 1 175 7 view .LVU149
+ 749 039c 892B      		or r24,r25
+ 175:main.c        **** 				| (current_date.month == 5) | (current_date.month == 7) 
+ 750               		.loc 1 175 34 view .LVU150
+ 751 039e 41E0      		ldi r20,lo8(1)
+ 752 03a0 932F      		mov r25,r19
+ 753 03a2 9D7F      		andi r25,lo8(-3)
+ 754 03a4 9130      		cpi r25,lo8(1)
+ 755 03a6 01F0      		breq .L73
+ 756 03a8 40E0      		ldi r20,0
+ 757               	.L73:
+ 175:main.c        **** 				| (current_date.month == 5) | (current_date.month == 7) 
+ 758               		.loc 1 175 7 view .LVU151
+ 759 03aa 842B      		or r24,r20
+ 760 03ac 01F4      		brne .L89
+ 176:main.c        **** 				| (current_date.month == 8) | (current_date.month == 10) 
+ 761               		.loc 1 176 55 view .LVU152
+ 762 03ae 89EF      		ldi r24,lo8(-7)
+ 763 03b0 830F      		add r24,r19
+ 764 03b2 8230      		cpi r24,lo8(2)
+ 765 03b4 00F4      		brsh .L155
+ 766               	.L89:
+ 179:main.c        **** 				} else{
+ 767               		.loc 1 179 6 is_stmt 1 view .LVU153
+ 179:main.c        **** 				} else{
+ 768               		.loc 1 179 23 is_stmt 0 view .LVU154
+ 769 03b6 2093 0000 		sts current_date+3,r18
+ 770 03ba 0895      		ret
+ 771               	.L155:
+ 181:main.c        **** 						current_date.day = (current_date.day > 1) ? current_date.day - 1 : 1;
+ 772               		.loc 1 181 6 is_stmt 1 view .LVU155
+ 181:main.c        **** 						current_date.day = (current_date.day > 1) ? current_date.day - 1 : 1;
+ 773               		.loc 1 181 50 is_stmt 0 view .LVU156
+ 774 03bc 8091 0000 		lds r24,current_date+6
+ 181:main.c        **** 						current_date.day = (current_date.day > 1) ? current_date.day - 1 : 1;
+ 775               		.loc 1 181 35 view .LVU157
+ 776 03c0 982F      		mov r25,r24
+ 777 03c2 9370      		andi r25,lo8(3)
+ 778 03c4 41E0      		ldi r20,lo8(1)
+ 779 03c6 01F0      		breq .L76
+ 780 03c8 40E0      		ldi r20,0
+ 781               	.L76:
+ 181:main.c        **** 						current_date.day = (current_date.day > 1) ? current_date.day - 1 : 1;
+ 782               		.loc 1 181 93 view .LVU158
+ 783 03ca 64E6      		ldi r22,lo8(100)
+ 784               	.LVL31:
+ 181:main.c        **** 						current_date.day = (current_date.day > 1) ? current_date.day - 1 : 1;
+ 785               		.loc 1 181 93 view .LVU159
+ 786 03cc 0E94 0000 		call __udivmodqi4
+ 787 03d0 81E0      		ldi r24,lo8(1)
+ 788 03d2 9111      		cpse r25,__zero_reg__
+ 789 03d4 00C0      		rjmp .L77
+ 790 03d6 80E0      		ldi r24,0
+ 791               	.L77:
+ 181:main.c        **** 						current_date.day = (current_date.day > 1) ? current_date.day - 1 : 1;
+ 792               		.loc 1 181 8 view .LVU160
+ 793 03d8 4823      		and r20,r24
+ 182:main.c        **** 					} else if(current_date.month == 2){
+ 794               		.loc 1 182 24 view .LVU161
+ 795 03da 2093 0000 		sts current_date+3,r18
+ 181:main.c        **** 						current_date.day = (current_date.day > 1) ? current_date.day - 1 : 1;
+ 796               		.loc 1 181 8 view .LVU162
+ 797 03de 4423      		tst r20
+ 798 03e0 01F0      		breq .L75
+ 181:main.c        **** 						current_date.day = (current_date.day > 1) ? current_date.day - 1 : 1;
+ 799               		.loc 1 181 35 view .LVU163
+ 800 03e2 3230      		cpi r19,lo8(2)
+ 801 03e4 01F4      		brne .L75
+ 182:main.c        **** 					} else if(current_date.month == 2){
+ 802               		.loc 1 182 7 is_stmt 1 view .LVU164
+ 803 03e6 0895      		ret
+ 804               	.L75:
+ 183:main.c        **** 						current_date.day = (current_date.day > 1) ? current_date.day - 1 : 1;
+ 805               		.loc 1 183 13 view .LVU165
+ 806 03e8 0895      		ret
+ 807               	.LVL32:
+ 808               	.L62:
+ 191:main.c        **** 				if((current_date.month == 2) & (current_date.day >= 28)){
+ 809               		.loc 1 191 5 view .LVU166
+ 191:main.c        **** 				if((current_date.month == 2) & (current_date.day >= 28)){
+ 810               		.loc 1 191 24 is_stmt 0 view .LVU167
+ 811 03ea 8091 0000 		lds r24,current_date+5
+ 812               	.LVL33:
+ 191:main.c        **** 				if((current_date.month == 2) & (current_date.day >= 28)){
+ 813               		.loc 1 191 24 view .LVU168
+ 814 03ee 8230      		cpi r24,lo8(2)
+ 815 03f0 00F4      		brsh .L80
+ 816 03f2 82E0      		ldi r24,lo8(2)
+ 817               	.L80:
+ 818 03f4 8150      		subi r24,lo8(-(-1))
+ 819 03f6 8093 0000 		sts current_date+5,r24
+ 192:main.c        **** 					current_date.day = 28;
+ 820               		.loc 1 192 5 is_stmt 1 view .LVU169
+ 192:main.c        **** 					current_date.day = 28;
+ 821               		.loc 1 192 34 is_stmt 0 view .LVU170
+ 822 03fa 9091 0000 		lds r25,current_date+3
+ 823 03fe 9C31      		cpi r25,lo8(28)
+ 824 0400 00F0      		brlo .L33
+ 825 0402 8230      		cpi r24,lo8(2)
+ 826 0404 01F4      		brne .+2
+ 827 0406 00C0      		rjmp .L55
+ 828               	.LVL34:
+ 829               	.L33:
+ 830               	/* epilogue start */
+ 831               		.loc 1 210 1 view .LVU171
+ 832 0408 0895      		ret
+ 833               	.LVL35:
+ 834               	.L63:
+ 197:main.c        **** 				break;
+ 835               		.loc 1 197 5 is_stmt 1 view .LVU172
+ 197:main.c        **** 				break;
+ 836               		.loc 1 197 38 is_stmt 0 view .LVU173
+ 837 040a 8091 0000 		lds r24,current_date+6
+ 838               	.LVL36:
+ 197:main.c        **** 				break;
+ 839               		.loc 1 197 23 view .LVU174
+ 840 040e 8823      		tst r24
+ 841 0410 01F4      		brne .+2
+ 842 0412 00C0      		rjmp .L84
+ 197:main.c        **** 				break;
+ 843               		.loc 1 197 23 discriminator 1 view .LVU175
+ 844 0414 8150      		subi r24,lo8(-(-1))
+ 845 0416 00C0      		rjmp .L84
+ 846               	.LVL37:
+ 847               	.L60:
+ 200:main.c        **** 				break;
+ 848               		.loc 1 200 5 is_stmt 1 view .LVU176
+ 200:main.c        **** 				break;
+ 849               		.loc 1 200 38 is_stmt 0 view .LVU177
+ 850 0418 8091 0000 		lds r24,current_date
+ 851               	.LVL38:
+ 200:main.c        **** 				break;
+ 852               		.loc 1 200 23 view .LVU178
+ 853 041c 8823      		tst r24
+ 854 041e 01F4      		brne .+2
+ 855 0420 00C0      		rjmp .L85
+ 200:main.c        **** 				break;
+ 856               		.loc 1 200 23 discriminator 1 view .LVU179
+ 857 0422 8150      		subi r24,lo8(-(-1))
+ 858 0424 00C0      		rjmp .L85
+ 859               	.LVL39:
+ 860               	.L65:
+ 203:main.c        **** 				break;
+ 861               		.loc 1 203 5 is_stmt 1 view .LVU180
+ 203:main.c        **** 				break;
+ 862               		.loc 1 203 37 is_stmt 0 view .LVU181
+ 863 0426 8091 0000 		lds r24,current_date+1
+ 864               	.LVL40:
+ 203:main.c        **** 				break;
+ 865               		.loc 1 203 22 view .LVU182
+ 866 042a 8823      		tst r24
+ 867 042c 01F4      		brne .+2
+ 868 042e 00C0      		rjmp .L86
+ 203:main.c        **** 				break;
+ 869               		.loc 1 203 22 discriminator 1 view .LVU183
+ 870 0430 8150      		subi r24,lo8(-(-1))
+ 871 0432 00C0      		rjmp .L86
+ 872               	.LVL41:
+ 873               	.L66:
+ 206:main.c        **** 				break;
+ 874               		.loc 1 206 5 is_stmt 1 view .LVU184
+ 206:main.c        **** 				break;
+ 875               		.loc 1 206 37 is_stmt 0 view .LVU185
+ 876 0434 8091 0000 		lds r24,current_date+2
+ 877               	.LVL42:
+ 206:main.c        **** 				break;
+ 878               		.loc 1 206 22 view .LVU186
+ 879 0438 8823      		tst r24
+ 880 043a 01F4      		brne .+2
+ 881 043c 00C0      		rjmp .L87
+ 206:main.c        **** 				break;
+ 882               		.loc 1 206 22 discriminator 1 view .LVU187
+ 883 043e 8150      		subi r24,lo8(-(-1))
+ 884 0440 00C0      		rjmp .L87
+ 885               		.cfi_endproc
+ 886               	.LFE11:
+ 888               	.global	change_blinds_harmonogram
+ 890               	change_blinds_harmonogram:
+ 891               	.LVL43:
+ 892               	.LFB12:
+ 211:main.c        **** 
+ 212:main.c        **** void change_blinds_harmonogram(struct datetime *edited_dt, uint8_t currently_edited, char direction
+ 893               		.loc 1 212 101 is_stmt 1 view -0
+ 894               		.cfi_startproc
+ 895               	/* prologue: function */
+ 896               	/* frame size = 0 */
+ 897               	/* stack size = 0 */
+ 898               	.L__stack_usage = 0
+ 899               		.loc 1 212 101 is_stmt 0 view .LVU189
+ 900 0442 FC01      		movw r30,r24
+ 213:main.c        **** 	if(direction == '+'){
+ 901               		.loc 1 213 2 is_stmt 1 view .LVU190
+ 902               		.loc 1 213 4 is_stmt 0 view .LVU191
+ 903 0444 4B32      		cpi r20,lo8(43)
+ 904 0446 01F4      		brne .L158
+ 214:main.c        **** 		switch(currently_edited){
+ 905               		.loc 1 214 3 is_stmt 1 view .LVU192
+ 906 0448 6130      		cpi r22,lo8(1)
+ 907 044a 01F0      		breq .L159
+ 908 044c 6230      		cpi r22,lo8(2)
+ 909 044e 01F0      		breq .L160
+ 910 0450 6111      		cpse r22,__zero_reg__
+ 911 0452 00C0      		rjmp .L157
+ 215:main.c        **** 			case 0:
+ 216:main.c        **** 				edited_dt->hour = (edited_dt->hour + 1) % 24;
+ 912               		.loc 1 216 5 view .LVU193
+ 913               		.loc 1 216 33 is_stmt 0 view .LVU194
+ 914 0454 8081      		ld r24,Z
+ 915               	.LVL44:
+ 916               		.loc 1 216 33 view .LVU195
+ 917 0456 90E0      		ldi r25,0
+ 918               		.loc 1 216 40 view .LVU196
+ 919 0458 0196      		adiw r24,1
+ 920               		.loc 1 216 45 view .LVU197
+ 921 045a 68E1      		ldi r22,lo8(24)
+ 922 045c 70E0      		ldi r23,0
+ 923               	.LVL45:
+ 924               		.loc 1 216 45 view .LVU198
+ 925 045e 0E94 0000 		call __divmodhi4
+ 926               	.L164:
+ 217:main.c        **** 				break;
+ 218:main.c        **** 			case 1: 
+ 219:main.c        **** 				edited_dt->min = (edited_dt->min + 1) % 60;
+ 220:main.c        **** 				break;
+ 221:main.c        **** 			case 2:
+ 222:main.c        **** 				edited_dt->sec = (edited_dt->sec + 1) % 60;
+ 223:main.c        **** 				break;
+ 224:main.c        **** 		}
+ 225:main.c        **** 	} else if(direction == '-'){
+ 226:main.c        **** 		switch(currently_edited){
+ 227:main.c        **** 			case 0:
+ 228:main.c        **** 				edited_dt->hour = (edited_dt->hour > 0) ? edited_dt->hour - 1 : 0;
+ 927               		.loc 1 228 21 discriminator 4 view .LVU199
+ 928 0462 8083      		st Z,r24
+ 229:main.c        **** 				break;
+ 929               		.loc 1 229 5 is_stmt 1 discriminator 4 view .LVU200
+ 930 0464 0895      		ret
+ 931               	.LVL46:
+ 932               	.L159:
+ 219:main.c        **** 				break;
+ 933               		.loc 1 219 5 view .LVU201
+ 219:main.c        **** 				break;
+ 934               		.loc 1 219 32 is_stmt 0 view .LVU202
+ 935 0466 8181      		ldd r24,Z+1
+ 936               	.LVL47:
+ 219:main.c        **** 				break;
+ 937               		.loc 1 219 32 view .LVU203
+ 938 0468 90E0      		ldi r25,0
+ 219:main.c        **** 				break;
+ 939               		.loc 1 219 38 view .LVU204
+ 940 046a 0196      		adiw r24,1
+ 219:main.c        **** 				break;
+ 941               		.loc 1 219 43 view .LVU205
+ 942 046c 6CE3      		ldi r22,lo8(60)
+ 943 046e 70E0      		ldi r23,0
+ 944               	.LVL48:
+ 219:main.c        **** 				break;
+ 945               		.loc 1 219 43 view .LVU206
+ 946 0470 0E94 0000 		call __divmodhi4
+ 947               	.L165:
+ 230:main.c        **** 			case 1: 
+ 231:main.c        **** 				edited_dt->min = (edited_dt->min > 0) ? edited_dt->min - 1 : 0;
+ 948               		.loc 1 231 20 discriminator 4 view .LVU207
+ 949 0474 8183      		std Z+1,r24
+ 232:main.c        **** 				break;
+ 950               		.loc 1 232 5 is_stmt 1 discriminator 4 view .LVU208
+ 951 0476 0895      		ret
+ 952               	.LVL49:
+ 953               	.L160:
+ 222:main.c        **** 				break;
+ 954               		.loc 1 222 5 view .LVU209
+ 222:main.c        **** 				break;
+ 955               		.loc 1 222 32 is_stmt 0 view .LVU210
+ 956 0478 8281      		ldd r24,Z+2
+ 957               	.LVL50:
+ 222:main.c        **** 				break;
+ 958               		.loc 1 222 32 view .LVU211
+ 959 047a 90E0      		ldi r25,0
+ 222:main.c        **** 				break;
+ 960               		.loc 1 222 38 view .LVU212
+ 961 047c 0196      		adiw r24,1
+ 222:main.c        **** 				break;
+ 962               		.loc 1 222 43 view .LVU213
+ 963 047e 6CE3      		ldi r22,lo8(60)
+ 964 0480 70E0      		ldi r23,0
+ 965               	.LVL51:
+ 222:main.c        **** 				break;
+ 966               		.loc 1 222 43 view .LVU214
+ 967 0482 0E94 0000 		call __divmodhi4
+ 968               	.L166:
+ 233:main.c        **** 			case 2:
+ 234:main.c        **** 				edited_dt->sec = (edited_dt->sec > 0 ) ? edited_dt->sec - 1 : 0;
+ 969               		.loc 1 234 20 discriminator 4 view .LVU215
+ 970 0486 8283      		std Z+2,r24
+ 235:main.c        **** 				break;
+ 971               		.loc 1 235 5 is_stmt 1 discriminator 4 view .LVU216
+ 972               	.L157:
+ 973               	/* epilogue start */
+ 236:main.c        **** 		}
+ 237:main.c        **** 	}
+ 238:main.c        **** }
+ 974               		.loc 1 238 1 is_stmt 0 view .LVU217
+ 975 0488 0895      		ret
+ 976               	.LVL52:
+ 977               	.L158:
+ 225:main.c        **** 		switch(currently_edited){
+ 978               		.loc 1 225 9 is_stmt 1 view .LVU218
+ 225:main.c        **** 		switch(currently_edited){
+ 979               		.loc 1 225 11 is_stmt 0 view .LVU219
+ 980 048a 4D32      		cpi r20,lo8(45)
+ 981 048c 01F4      		brne .L157
+ 226:main.c        **** 			case 0:
+ 982               		.loc 1 226 3 is_stmt 1 view .LVU220
+ 983 048e 6130      		cpi r22,lo8(1)
+ 984 0490 01F0      		breq .L162
+ 985 0492 6230      		cpi r22,lo8(2)
+ 986 0494 01F0      		breq .L163
+ 987 0496 6111      		cpse r22,__zero_reg__
+ 988 0498 00C0      		rjmp .L157
+ 228:main.c        **** 				break;
+ 989               		.loc 1 228 5 view .LVU221
+ 228:main.c        **** 				break;
+ 990               		.loc 1 228 33 is_stmt 0 view .LVU222
+ 991 049a 8081      		ld r24,Z
+ 992               	.LVL53:
+ 228:main.c        **** 				break;
+ 993               		.loc 1 228 21 view .LVU223
+ 994 049c 8823      		tst r24
+ 995 049e 01F0      		breq .L164
+ 228:main.c        **** 				break;
+ 996               		.loc 1 228 21 discriminator 1 view .LVU224
+ 997 04a0 8150      		subi r24,lo8(-(-1))
+ 998 04a2 00C0      		rjmp .L164
+ 999               	.LVL54:
+ 1000               	.L162:
+ 231:main.c        **** 				break;
+ 1001               		.loc 1 231 5 is_stmt 1 view .LVU225
+ 231:main.c        **** 				break;
+ 1002               		.loc 1 231 32 is_stmt 0 view .LVU226
+ 1003 04a4 8181      		ldd r24,Z+1
+ 1004               	.LVL55:
+ 231:main.c        **** 				break;
+ 1005               		.loc 1 231 20 view .LVU227
+ 1006 04a6 8823      		tst r24
+ 1007 04a8 01F0      		breq .L165
+ 231:main.c        **** 				break;
+ 1008               		.loc 1 231 20 discriminator 1 view .LVU228
+ 1009 04aa 8150      		subi r24,lo8(-(-1))
+ 1010 04ac 00C0      		rjmp .L165
+ 1011               	.LVL56:
+ 1012               	.L163:
+ 234:main.c        **** 				break;
+ 1013               		.loc 1 234 5 is_stmt 1 view .LVU229
+ 234:main.c        **** 				break;
+ 1014               		.loc 1 234 32 is_stmt 0 view .LVU230
+ 1015 04ae 8281      		ldd r24,Z+2
+ 1016               	.LVL57:
+ 234:main.c        **** 				break;
+ 1017               		.loc 1 234 20 view .LVU231
+ 1018 04b0 8823      		tst r24
+ 1019 04b2 01F0      		breq .L166
+ 234:main.c        **** 				break;
+ 1020               		.loc 1 234 20 discriminator 1 view .LVU232
+ 1021 04b4 8150      		subi r24,lo8(-(-1))
+ 1022 04b6 00C0      		rjmp .L166
+ 1023               		.cfi_endproc
+ 1024               	.LFE12:
+ 1026               		.section	.rodata.str1.1
+ 1027               	.LC2:
+ 1028 002c 2573 2062 		.string	"%s blinds"
+ 1028      6C69 6E64 
+ 1028      7300 
+ 1029               		.text
+ 1030               	.global	print_blinds_harmonogram
+ 1032               	print_blinds_harmonogram:
+ 1033               	.LVL58:
+ 1034               	.LFB13:
+ 239:main.c        **** 
+ 240:main.c        **** void print_blinds_harmonogram(struct datetime *printed_dt, char time[]){
+ 1035               		.loc 1 240 72 is_stmt 1 view -0
+ 1036               		.cfi_startproc
+ 1037               		.loc 1 240 72 is_stmt 0 view .LVU234
+ 1038 04b8 0F93      		push r16
+ 1039               	.LCFI24:
+ 1040               		.cfi_def_cfa_offset 3
+ 1041               		.cfi_offset 16, -2
+ 1042 04ba 1F93      		push r17
+ 1043               	.LCFI25:
+ 1044               		.cfi_def_cfa_offset 4
+ 1045               		.cfi_offset 17, -3
+ 1046 04bc CF93      		push r28
+ 1047               	.LCFI26:
+ 1048               		.cfi_def_cfa_offset 5
+ 1049               		.cfi_offset 28, -4
+ 1050 04be DF93      		push r29
+ 1051               	.LCFI27:
+ 1052               		.cfi_def_cfa_offset 6
+ 1053               		.cfi_offset 29, -5
+ 1054               	/* prologue: function */
+ 1055               	/* frame size = 0 */
+ 1056               	/* stack size = 4 */
+ 1057               	.L__stack_usage = 4
+ 1058 04c0 EC01      		movw r28,r24
+ 1059 04c2 162F      		mov r17,r22
+ 1060 04c4 072F      		mov r16,r23
+ 241:main.c        **** 	lcd_clear();
+ 1061               		.loc 1 241 2 is_stmt 1 view .LVU235
+ 1062 04c6 0E94 0000 		call lcd_clear
+ 1063               	.LVL59:
+ 242:main.c        **** 	lcd_set_xy(0,0);
+ 1064               		.loc 1 242 2 view .LVU236
+ 1065 04ca 60E0      		ldi r22,0
+ 1066 04cc 80E0      		ldi r24,0
+ 1067 04ce 0E94 0000 		call lcd_set_xy
+ 1068               	.LVL60:
+ 243:main.c        **** 	printf("%s blinds", time);
+ 1069               		.loc 1 243 2 view .LVU237
+ 1070 04d2 0F93      		push r16
+ 1071               	.LCFI28:
+ 1072               		.cfi_def_cfa_offset 7
+ 1073 04d4 1F93      		push r17
+ 1074               	.LCFI29:
+ 1075               		.cfi_def_cfa_offset 8
+ 1076 04d6 80E0      		ldi r24,lo8(.LC2)
+ 1077 04d8 90E0      		ldi r25,hi8(.LC2)
+ 1078 04da 9F93      		push r25
+ 1079               	.LCFI30:
+ 1080               		.cfi_def_cfa_offset 9
+ 1081 04dc 8F93      		push r24
+ 1082               	.LCFI31:
+ 1083               		.cfi_def_cfa_offset 10
+ 1084 04de 0E94 0000 		call printf
+ 1085               	.LVL61:
+ 244:main.c        **** 	lcd_set_xy(1,0);
+ 1086               		.loc 1 244 2 view .LVU238
+ 1087 04e2 60E0      		ldi r22,0
+ 1088 04e4 81E0      		ldi r24,lo8(1)
+ 1089 04e6 0E94 0000 		call lcd_set_xy
+ 1090               	.LVL62:
+ 245:main.c        **** 	printf("Time: %02d:%02d:%02d", printed_dt->hour, printed_dt->min, printed_dt->sec);
+ 1091               		.loc 1 245 2 view .LVU239
+ 1092 04ea 8A81      		ldd r24,Y+2
+ 1093 04ec 1F92      		push __zero_reg__
+ 1094               	.LCFI32:
+ 1095               		.cfi_def_cfa_offset 11
+ 1096 04ee 8F93      		push r24
+ 1097               	.LCFI33:
+ 1098               		.cfi_def_cfa_offset 12
+ 1099 04f0 8981      		ldd r24,Y+1
+ 1100 04f2 1F92      		push __zero_reg__
+ 1101               	.LCFI34:
+ 1102               		.cfi_def_cfa_offset 13
+ 1103 04f4 8F93      		push r24
+ 1104               	.LCFI35:
+ 1105               		.cfi_def_cfa_offset 14
+ 1106 04f6 8881      		ld r24,Y
+ 1107 04f8 1F92      		push __zero_reg__
+ 1108               	.LCFI36:
+ 1109               		.cfi_def_cfa_offset 15
+ 1110 04fa 8F93      		push r24
+ 1111               	.LCFI37:
+ 1112               		.cfi_def_cfa_offset 16
+ 1113 04fc 80E0      		ldi r24,lo8(.LC1)
+ 1114 04fe 90E0      		ldi r25,hi8(.LC1)
+ 1115 0500 9F93      		push r25
+ 1116               	.LCFI38:
+ 1117               		.cfi_def_cfa_offset 17
+ 1118 0502 8F93      		push r24
+ 1119               	.LCFI39:
+ 1120               		.cfi_def_cfa_offset 18
+ 1121 0504 0E94 0000 		call printf
+ 1122               	.LVL63:
+ 246:main.c        **** }
+ 1123               		.loc 1 246 1 is_stmt 0 view .LVU240
+ 1124 0508 8DB7      		in r24,__SP_L__
+ 1125 050a 9EB7      		in r25,__SP_H__
+ 1126 050c 0C96      		adiw r24,12
+ 1127 050e 0FB6      		in __tmp_reg__,__SREG__
+ 1128 0510 F894      		cli
+ 1129 0512 9EBF      		out __SP_H__,r25
+ 1130 0514 0FBE      		out __SREG__,__tmp_reg__
+ 1131 0516 8DBF      		out __SP_L__,r24
+ 1132               	.LCFI40:
+ 1133               		.cfi_def_cfa_offset 6
+ 1134               	/* epilogue start */
+ 1135 0518 DF91      		pop r29
+ 1136 051a CF91      		pop r28
+ 1137               	.LVL64:
+ 1138               		.loc 1 246 1 view .LVU241
+ 1139 051c 1F91      		pop r17
+ 1140 051e 0F91      		pop r16
+ 1141 0520 0895      		ret
+ 1142               		.cfi_endproc
+ 1143               	.LFE13:
+ 1145               		.section	.rodata.str1.1
+ 1146               	.LC3:
+ 1147 0036 4D6F 726E 		.string	"Morning"
+ 1147      696E 6700 
+ 1148               	.LC4:
+ 1149 003e 4E69 6768 		.string	"Night"
+ 1149      7400 
+ 1150               		.section	.text.startup,"ax",@progbits
+ 1151               	.global	main
+ 1153               	main:
+ 1154               	.LFB14:
+ 247:main.c        **** 
+ 248:main.c        **** 
+ 249:main.c        **** int main(void){
+ 1155               		.loc 1 249 15 is_stmt 1 view -0
+ 1156               		.cfi_startproc
+ 1157               	/* prologue: function */
+ 1158               	/* frame size = 0 */
+ 1159               	/* stack size = 0 */
+ 1160               	.L__stack_usage = 0
+ 250:main.c        **** 	// 0 - input, 1 - output
+ 251:main.c        **** 	DDRB = 0b00000001;	// switches and LED 
+ 1161               		.loc 1 251 2 view .LVU243
+ 1162               		.loc 1 251 7 is_stmt 0 view .LVU244
+ 1163 0000 81E0      		ldi r24,lo8(1)
+ 1164 0002 87BB      		out 0x17,r24
+ 252:main.c        **** 	PORTB = 0xff;
+ 1165               		.loc 1 252 2 is_stmt 1 view .LVU245
+ 1166               		.loc 1 252 8 is_stmt 0 view .LVU246
+ 1167 0004 8FEF      		ldi r24,lo8(-1)
+ 1168 0006 88BB      		out 0x18,r24
+ 253:main.c        **** 	DDRC = 0b11111110;	// blinds switch
+ 1169               		.loc 1 253 2 is_stmt 1 view .LVU247
+ 1170               		.loc 1 253 7 is_stmt 0 view .LVU248
+ 1171 0008 9EEF      		ldi r25,lo8(-2)
+ 1172 000a 94BB      		out 0x14,r25
+ 254:main.c        **** 	PORTC = 0xff;
+ 1173               		.loc 1 254 2 is_stmt 1 view .LVU249
+ 1174               		.loc 1 254 8 is_stmt 0 view .LVU250
+ 1175 000c 85BB      		out 0x15,r24
+ 255:main.c        **** 	DDRD |= 0xf0;		// motor and CLK
+ 1176               		.loc 1 255 2 is_stmt 1 view .LVU251
+ 1177               		.loc 1 255 7 is_stmt 0 view .LVU252
+ 1178 000e 81B3      		in r24,0x11
+ 1179 0010 806F      		ori r24,lo8(-16)
+ 1180 0012 81BB      		out 0x11,r24
+ 256:main.c        **** 	PORTD |= 0xf0;
+ 1181               		.loc 1 256 2 is_stmt 1 view .LVU253
+ 1182               		.loc 1 256 8 is_stmt 0 view .LVU254
+ 1183 0014 82B3      		in r24,0x12
+ 1184 0016 806F      		ori r24,lo8(-16)
+ 1185 0018 82BB      		out 0x12,r24
+ 257:main.c        **** 
+ 258:main.c        **** 	//Timer\Counter2 - 0,01s
+ 259:main.c        **** 	TCCR2 |= (1<<WGM01); //tryb CTC
+ 1186               		.loc 1 259 2 is_stmt 1 view .LVU255
+ 1187               		.loc 1 259 8 is_stmt 0 view .LVU256
+ 1188 001a 85B5      		in r24,0x25
+ 1189 001c 8860      		ori r24,lo8(8)
+ 1190 001e 85BD      		out 0x25,r24
+ 260:main.c        **** 	TCCR2 |= (1<<CS22)|(1<<CS21)|(1<<CS20); //preskaler 1024
+ 1191               		.loc 1 260 2 is_stmt 1 view .LVU257
+ 1192               		.loc 1 260 8 is_stmt 0 view .LVU258
+ 1193 0020 85B5      		in r24,0x25
+ 1194 0022 8760      		ori r24,lo8(7)
+ 1195 0024 85BD      		out 0x25,r24
+ 261:main.c        **** 	OCR2 = 155; 	
+ 1196               		.loc 1 261 2 is_stmt 1 view .LVU259
+ 1197               		.loc 1 261 7 is_stmt 0 view .LVU260
+ 1198 0026 8BE9      		ldi r24,lo8(-101)
+ 1199 0028 83BD      		out 0x23,r24
+ 262:main.c        **** 	TIMSK |= (1<<OCIE2);
+ 1200               		.loc 1 262 2 is_stmt 1 view .LVU261
+ 1201               		.loc 1 262 8 is_stmt 0 view .LVU262
+ 1202 002a 89B7      		in r24,0x39
+ 1203 002c 8068      		ori r24,lo8(-128)
+ 1204 002e 89BF      		out 0x39,r24
+ 263:main.c        **** 
+ 264:main.c        **** 	lcdinit();
+ 1205               		.loc 1 264 2 is_stmt 1 view .LVU263
+ 1206 0030 0E94 0000 		call lcdinit
+ 1207               	.LVL65:
+ 265:main.c        **** 	I2C_init();
+ 1208               		.loc 1 265 2 view .LVU264
+ 1209 0034 0E94 0000 		call I2C_init
+ 1210               	.LVL66:
+ 266:main.c        **** 
+ 267:main.c        **** 	MCUCR |= (1<<ISC01); 	// falling slope
+ 1211               		.loc 1 267 2 view .LVU265
+ 1212               		.loc 1 267 8 is_stmt 0 view .LVU266
+ 1213 0038 85B7      		in r24,0x35
+ 1214 003a 8260      		ori r24,lo8(2)
+ 1215 003c 85BF      		out 0x35,r24
+ 268:main.c        **** 	GICR |= (1<<INT0);	// turn INT0 interrupt on
+ 1216               		.loc 1 268 2 is_stmt 1 view .LVU267
+ 1217               		.loc 1 268 7 is_stmt 0 view .LVU268
+ 1218 003e 8BB7      		in r24,0x3b
+ 1219 0040 8064      		ori r24,lo8(64)
+ 1220 0042 8BBF      		out 0x3b,r24
+ 269:main.c        **** 	rtc_init();
+ 1221               		.loc 1 269 2 is_stmt 1 view .LVU269
+ 1222 0044 0E94 0000 		call rtc_init
+ 1223               	.LVL67:
+ 270:main.c        **** 
+ 271:main.c        **** 	rtc_set_date_time(&current_date);
+ 1224               		.loc 1 271 2 view .LVU270
+ 1225 0048 80E0      		ldi r24,lo8(current_date)
+ 1226 004a 90E0      		ldi r25,hi8(current_date)
+ 1227 004c 0E94 0000 		call rtc_set_date_time
+ 1228               	.LVL68:
+ 272:main.c        **** 	sei();
+ 1229               		.loc 1 272 2 view .LVU271
+ 1230               	/* #APP */
+ 1231               	 ;  272 "main.c" 1
+ 1232 0050 7894      		sei
+ 1233               	 ;  0 "" 2
+ 273:main.c        **** 
+ 274:main.c        **** 	while(1){
+ 275:main.c        **** 		if(check_buttons){	// check buttons in interval 0,1s
+ 276:main.c        **** 			if(!(PINB & (1<<SWITCH_EDIT))){
+ 277:main.c        **** 				// Enter time editing mode
+ 278:main.c        **** 				TURN_ON_LED;
+ 279:main.c        **** 				if(blinds_editing_mode != 1){
+ 280:main.c        **** 					update_data_from_ISR = 0;
+ 281:main.c        **** 					editing_mode = 1;
+ 282:main.c        **** 				}
+ 283:main.c        **** 
+ 284:main.c        **** 			} else if(!(PINB & (1<<SWITCH_UP))){
+ 285:main.c        **** 				// Change currently edited (+)
+ 286:main.c        **** 				TURN_ON_LED;
+ 287:main.c        **** 				if(editing_mode){
+ 288:main.c        **** 					change_full_date(currently_edited, '+');
+ 289:main.c        **** 					print_date(current_date);
+ 290:main.c        **** 					_delay_ms(150);	
+ 291:main.c        **** 				} else if(blinds_editing_mode){
+ 292:main.c        **** 					switch(edited_blinds){
+ 293:main.c        **** 						case 0:
+ 294:main.c        **** 							change_blinds_harmonogram(&blinds_morning, currently_edited % 3, '+');
+ 295:main.c        **** 							print_blinds_harmonogram(&blinds_morning, "Morning");
+ 296:main.c        **** 							_delay_ms(150);
+ 297:main.c        **** 							break;
+ 298:main.c        **** 						case 1:
+ 299:main.c        **** 							change_blinds_harmonogram(&blinds_night, currently_edited % 3, '+');
+ 300:main.c        **** 							print_blinds_harmonogram(&blinds_night, "Night");
+ 301:main.c        **** 							_delay_ms(150);
+ 302:main.c        **** 							break;
+ 303:main.c        **** 					}
+ 304:main.c        **** 				}
+ 305:main.c        **** 			} else if(!(PINB & (1<<SWITCH_DOWN))){
+ 306:main.c        **** 				// Change currently edited (-)
+ 307:main.c        **** 				TURN_ON_LED;
+ 308:main.c        **** 				if(editing_mode){
+ 309:main.c        **** 					change_full_date(currently_edited, '-');
+ 310:main.c        **** 					print_date(current_date);
+ 311:main.c        **** 					_delay_ms(150);
+ 312:main.c        **** 				} else if(blinds_editing_mode){
+ 313:main.c        **** 					switch(edited_blinds){
+ 314:main.c        **** 						case 0:
+ 315:main.c        **** 							change_blinds_harmonogram(&blinds_morning, currently_edited % 3, '-');
+ 316:main.c        **** 							print_blinds_harmonogram(&blinds_morning, "Morning");
+ 317:main.c        **** 							_delay_ms(150);
+ 318:main.c        **** 							break;	
+ 319:main.c        **** 						case 1:
+ 320:main.c        **** 							change_blinds_harmonogram(&blinds_night, currently_edited % 3, '-');
+ 321:main.c        **** 							print_blinds_harmonogram(&blinds_night, "Night");
+ 322:main.c        **** 							_delay_ms(150);	
+ 323:main.c        **** 							break;
+ 324:main.c        **** 					}
+ 325:main.c        **** 				}
+ 326:main.c        **** 			} else if(!(PINB & (1<<SWITCH_NEXT))){
+ 327:main.c        **** 				// Switch currently edited element of datetime struct
+ 328:main.c        **** 				TURN_ON_LED;
+ 329:main.c        **** 				currently_edited = (currently_edited + 1) % 6;
+ 330:main.c        **** 				_delay_ms(300);
+ 331:main.c        **** 			} else if(!(PINB & (1<<SWITCH_SET))){
+ 332:main.c        **** 				// Accept changes
+ 333:main.c        **** 				TURN_ON_LED;
+ 334:main.c        **** 				if(editing_mode == 1){rtc_set_date_time(&current_date);}
+ 335:main.c        **** 				currently_edited = 0;
+ 336:main.c        **** 				blinds_editing_mode = 0;
+ 337:main.c        **** 				update_data_from_ISR = 1;
+ 338:main.c        **** 				_delay_ms(100);
+ 339:main.c        **** 			} else if(!(PINC & (1<<SWITCH_BLINDS))){
+ 340:main.c        **** 				// Change blinds routine
+ 341:main.c        **** 				TURN_ON_LED;
+ 342:main.c        **** 				update_data_from_ISR = 0;
+ 343:main.c        **** 				if(!editing_mode){
+ 344:main.c        **** 					blinds_editing_mode = 1;
+ 1234               		.loc 1 344 26 is_stmt 0 view .LVU272
+ 1235               	/* #NOAPP */
+ 1236 0052 FF24      		clr r15
+ 1237 0054 F394      		inc r15
+ 329:main.c        **** 				_delay_ms(300);
+ 1238               		.loc 1 329 47 view .LVU273
+ 1239 0056 C6E0      		ldi r28,lo8(6)
+ 1240 0058 D0E0      		ldi r29,0
+ 315:main.c        **** 							print_blinds_harmonogram(&blinds_morning, "Morning");
+ 1241               		.loc 1 315 8 view .LVU274
+ 1242 005a 13E0      		ldi r17,lo8(3)
+ 345:main.c        **** 					edited_blinds = (edited_blinds + 1) % 2;
+ 346:main.c        **** 					switch(edited_blinds){
+ 347:main.c        **** 						case 0: //morning routine
+ 348:main.c        **** 							print_blinds_harmonogram(&blinds_morning, "Morning");
+ 349:main.c        **** 							break;
+ 350:main.c        **** 						case 1: //night routine
+ 351:main.c        **** 							print_blinds_harmonogram(&blinds_night, "Night");
+ 352:main.c        **** 							break;
+ 353:main.c        **** 					}
+ 354:main.c        **** 					_delay_ms(300);
+ 355:main.c        **** 				}
+ 356:main.c        **** 			} else {
+ 357:main.c        **** 				TURN_OFF_LED;
+ 358:main.c        **** 			}
+ 359:main.c        **** 		}
+ 360:main.c        **** 
+ 361:main.c        **** 		if(motor_state){
+ 362:main.c        **** 			PORTD = (1<<(step+4));
+ 1243               		.loc 1 362 14 view .LVU275
+ 1244 005c CC24      		clr r12
+ 1245 005e C394      		inc r12
+ 1246 0060 D12C      		mov r13,__zero_reg__
+ 1247               	.L178:
+ 274:main.c        **** 		if(check_buttons){	// check buttons in interval 0,1s
+ 1248               		.loc 1 274 2 is_stmt 1 view .LVU276
+ 275:main.c        **** 			if(!(PINB & (1<<SWITCH_EDIT))){
+ 1249               		.loc 1 275 3 view .LVU277
+ 275:main.c        **** 			if(!(PINB & (1<<SWITCH_EDIT))){
+ 1250               		.loc 1 275 6 is_stmt 0 view .LVU278
+ 1251 0062 8091 0000 		lds r24,check_buttons
+ 275:main.c        **** 			if(!(PINB & (1<<SWITCH_EDIT))){
+ 1252               		.loc 1 275 5 view .LVU279
+ 1253 0066 8823      		tst r24
+ 1254 0068 01F0      		breq .L180
+ 276:main.c        **** 				// Enter time editing mode
+ 1255               		.loc 1 276 4 is_stmt 1 view .LVU280
+ 276:main.c        **** 				// Enter time editing mode
+ 1256               		.loc 1 276 6 is_stmt 0 view .LVU281
+ 1257 006a B399      		sbic 0x16,3
+ 1258 006c 00C0      		rjmp .L181
+ 278:main.c        **** 				if(blinds_editing_mode != 1){
+ 1259               		.loc 1 278 5 is_stmt 1 view .LVU282
+ 1260 006e C098      		cbi 0x18,0
+ 279:main.c        **** 					update_data_from_ISR = 0;
+ 1261               		.loc 1 279 5 view .LVU283
+ 279:main.c        **** 					update_data_from_ISR = 0;
+ 1262               		.loc 1 279 28 is_stmt 0 view .LVU284
+ 1263 0070 8091 0000 		lds r24,blinds_editing_mode
+ 279:main.c        **** 					update_data_from_ISR = 0;
+ 1264               		.loc 1 279 7 view .LVU285
+ 1265 0074 8130      		cpi r24,lo8(1)
+ 1266 0076 01F0      		breq .L180
+ 280:main.c        **** 					editing_mode = 1;
+ 1267               		.loc 1 280 6 is_stmt 1 view .LVU286
+ 280:main.c        **** 					editing_mode = 1;
+ 1268               		.loc 1 280 27 is_stmt 0 view .LVU287
+ 1269 0078 1092 0000 		sts update_data_from_ISR,__zero_reg__
+ 281:main.c        **** 				}
+ 1270               		.loc 1 281 6 is_stmt 1 view .LVU288
+ 281:main.c        **** 				}
+ 1271               		.loc 1 281 19 is_stmt 0 view .LVU289
+ 1272 007c F092 0000 		sts editing_mode,r15
+ 1273               	.L180:
+ 361:main.c        **** 			PORTD = (1<<(step+4));
+ 1274               		.loc 1 361 3 is_stmt 1 view .LVU290
+ 361:main.c        **** 			PORTD = (1<<(step+4));
+ 1275               		.loc 1 361 5 is_stmt 0 view .LVU291
+ 1276 0080 8091 0000 		lds r24,motor_state
+ 1277 0084 8823      		tst r24
+ 1278 0086 01F4      		brne .+2
+ 1279 0088 00C0      		rjmp .L199
+ 1280               		.loc 1 362 4 is_stmt 1 view .LVU292
+ 1281               		.loc 1 362 21 is_stmt 0 view .LVU293
+ 1282 008a 8091 0000 		lds r24,step
+ 1283 008e 8C5F      		subi r24,lo8(-(4))
+ 1284               		.loc 1 362 14 view .LVU294
+ 1285 0090 9601      		movw r18,r12
+ 1286 0092 00C0      		rjmp 2f
+ 1287               		1:
+ 1288 0094 220F      		lsl r18
+ 1289 0096 331F      		rol r19
+ 1290               		2:
+ 1291 0098 8A95      		dec r24
+ 1292 009a 02F4      		brpl 1b
+ 1293               		.loc 1 362 10 view .LVU295
+ 1294 009c 22BB      		out 0x12,r18
+ 363:main.c        **** 			if(direction) step++;
+ 1295               		.loc 1 363 4 is_stmt 1 view .LVU296
+ 1296               		.loc 1 363 6 is_stmt 0 view .LVU297
+ 1297 009e 9091 0000 		lds r25,direction
+ 1298 00a2 8091 0000 		lds r24,step
+ 1299 00a6 9923      		tst r25
+ 1300 00a8 01F4      		brne .+2
+ 1301 00aa 00C0      		rjmp .L200
+ 1302               		.loc 1 363 18 is_stmt 1 discriminator 1 view .LVU298
+ 1303               		.loc 1 363 22 is_stmt 0 discriminator 1 view .LVU299
+ 1304 00ac 8F5F      		subi r24,lo8(-(1))
+ 1305               	.L215:
+ 364:main.c        **** 			else step--;
+ 1306               		.loc 1 364 13 view .LVU300
+ 1307 00ae 8093 0000 		sts step,r24
+ 365:main.c        **** 			step = step % 4;
+ 1308               		.loc 1 365 4 is_stmt 1 view .LVU301
+ 1309               		.loc 1 365 16 is_stmt 0 view .LVU302
+ 1310 00b2 8091 0000 		lds r24,step
+ 1311 00b6 8370      		andi r24,lo8(3)
+ 1312               		.loc 1 365 9 view .LVU303
+ 1313 00b8 8093 0000 		sts step,r24
+ 366:main.c        **** 			_delay_ms(3);
+ 1314               		.loc 1 366 4 is_stmt 1 view .LVU304
+ 1315               	.LVL69:
+ 1316               	.LBB22:
+ 1317               	.LBI22:
+ 1318               		.file 2 "e:\\avr-gcc-10.1.0-x64-windows\\avr\\include\\util\\delay.h"
+   1:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** /* Copyright (c) 2002, Marek Michalkiewicz
+   2:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****    Copyright (c) 2004,2005,2007 Joerg Wunsch
+   3:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****    Copyright (c) 2007  Florin-Viorel Petrov
+   4:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****    All rights reserved.
+   5:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+   6:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****    Redistribution and use in source and binary forms, with or without
+   7:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****    modification, are permitted provided that the following conditions are met:
+   8:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+   9:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****    * Redistributions of source code must retain the above copyright
+  10:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****      notice, this list of conditions and the following disclaimer.
+  11:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+  12:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****    * Redistributions in binary form must reproduce the above copyright
+  13:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****      notice, this list of conditions and the following disclaimer in
+  14:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****      the documentation and/or other materials provided with the
+  15:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****      distribution.
+  16:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+  17:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****    * Neither the name of the copyright holders nor the names of
+  18:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****      contributors may be used to endorse or promote products derived
+  19:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****      from this software without specific prior written permission.
+  20:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+  21:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+  22:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****   AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+  23:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****   IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+  24:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****   ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+  25:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****   LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+  26:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****   CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+  27:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****   SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+  28:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****   INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+  29:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****   CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+  30:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****   ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+  31:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****   POSSIBILITY OF SUCH DAMAGE. */
+  32:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+  33:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** /* $Id$ */
+  34:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+  35:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** #ifndef _UTIL_DELAY_H_
+  36:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** #define _UTIL_DELAY_H_ 1
+  37:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+  38:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** #ifndef __DOXYGEN__
+  39:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** #  ifndef __HAS_DELAY_CYCLES
+  40:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** #    define __HAS_DELAY_CYCLES 1
+  41:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** #  endif
+  42:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** #endif  /* __DOXYGEN__ */
+  43:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+  44:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** #include <inttypes.h>
+  45:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** #include <util/delay_basic.h>
+  46:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** #include <math.h>
+  47:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+  48:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** /** \file */
+  49:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** /** \defgroup util_delay <util/delay.h>: Convenience functions for busy-wait delay loops
+  50:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****     \code
+  51:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****     #define F_CPU 1000000UL  // 1 MHz
+  52:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****     //#define F_CPU 14.7456E6
+  53:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****     #include <util/delay.h>
+  54:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****     \endcode
+  55:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+  56:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****     \note As an alternative method, it is possible to pass the
+  57:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****     F_CPU macro down to the compiler from the Makefile.
+  58:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****     Obviously, in that case, no \c \#define statement should be
+  59:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****     used.
+  60:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+  61:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****     The functions in this header file are wrappers around the basic
+  62:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****     busy-wait functions from <util/delay_basic.h>.  They are meant as
+  63:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****     convenience functions where actual time values can be specified
+  64:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****     rather than a number of cycles to wait for.  The idea behind is
+  65:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****     that compile-time constant expressions will be eliminated by
+  66:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****     compiler optimization so floating-point expressions can be used
+  67:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****     to calculate the number of delay cycles needed based on the CPU
+  68:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****     frequency passed by the macro F_CPU.
+  69:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+  70:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****     \note In order for these functions to work as intended, compiler
+  71:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****     optimizations <em>must</em> be enabled, and the delay time
+  72:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****     <em>must</em> be an expression that is a known constant at
+  73:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****     compile-time.  If these requirements are not met, the resulting
+  74:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****     delay will be much longer (and basically unpredictable), and
+  75:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****     applications that otherwise do not use floating-point calculations
+  76:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****     will experience severe code bloat by the floating-point library
+  77:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****     routines linked into the application.
+  78:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+  79:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****     The functions available allow the specification of microsecond, and
+  80:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****     millisecond delays directly, using the application-supplied macro
+  81:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****     F_CPU as the CPU clock frequency (in Hertz).
+  82:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+  83:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** */
+  84:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+  85:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** #if !defined(__DOXYGEN__)
+  86:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** static __inline__ void _delay_us(double __us) __attribute__((__always_inline__));
+  87:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** static __inline__ void _delay_ms(double __ms) __attribute__((__always_inline__));
+  88:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** #endif
+  89:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+  90:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** #ifndef F_CPU
+  91:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** /* prevent compiler error by supplying a default */
+  92:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** # warning "F_CPU not defined for <util/delay.h>"
+  93:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** /** \ingroup util_delay
+  94:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****     \def F_CPU
+  95:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****     \brief CPU frequency in Hz
+  96:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+  97:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****     The macro F_CPU specifies the CPU frequency to be considered by
+  98:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****     the delay macros.  This macro is normally supplied by the
+  99:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****     environment (e.g. from within a project header, or the project's
+ 100:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****     Makefile).  The value 1 MHz here is only provided as a "vanilla"
+ 101:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****     fallback if no such user-provided definition could be found.
+ 102:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+ 103:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****     In terms of the delay functions, the CPU frequency can be given as
+ 104:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****     a floating-point constant (e.g. 3.6864E6 for 3.6864 MHz).
+ 105:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****     However, the macros in <util/setbaud.h> require it to be an
+ 106:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****     integer value.
+ 107:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****  */
+ 108:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** # define F_CPU 1000000UL
+ 109:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** #endif
+ 110:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+ 111:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** #ifndef __OPTIMIZE__
+ 112:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** # warning "Compiler optimizations disabled; functions from <util/delay.h> won't work as designed"
+ 113:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** #endif
+ 114:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+ 115:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** #if __HAS_DELAY_CYCLES && defined(__OPTIMIZE__) && \
+ 116:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****   !defined(__DELAY_BACKWARD_COMPATIBLE__) &&	   \
+ 117:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****   __STDC_HOSTED__
+ 118:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** #  include <math.h>
+ 119:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** #endif
+ 120:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+ 121:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** /**
+ 122:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****    \ingroup util_delay
+ 123:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+ 124:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****    Perform a delay of \c __ms milliseconds, using _delay_loop_2().
+ 125:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+ 126:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****    The macro F_CPU is supposed to be defined to a
+ 127:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****    constant defining the CPU clock frequency (in Hertz).
+ 128:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+ 129:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****    The maximal possible delay is 262.14 ms / F_CPU in MHz.
+ 130:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+ 131:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****    When the user request delay which exceed the maximum possible one,
+ 132:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****    _delay_ms() provides a decreased resolution functionality. In this
+ 133:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****    mode _delay_ms() will work with a resolution of 1/10 ms, providing
+ 134:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****    delays up to 6.5535 seconds (independent from CPU frequency).  The
+ 135:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****    user will not be informed about decreased resolution.
+ 136:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+ 137:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****    If the avr-gcc toolchain has __builtin_avr_delay_cycles()
+ 138:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****    support, maximal possible delay is 4294967.295 ms/ F_CPU in MHz. For
+ 139:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****    values greater than the maximal possible delay, overflows results in
+ 140:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****    no delay i.e., 0ms.
+ 141:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+ 142:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****    Conversion of \c __ms into clock cycles may not always result in
+ 143:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****    integer.  By default, the clock cycles rounded up to next
+ 144:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****    integer. This ensures that the user gets at least \c __ms
+ 145:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****    microseconds of delay.
+ 146:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+ 147:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****    Alternatively, by defining the macro \c __DELAY_ROUND_DOWN__, or
+ 148:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****    \c __DELAY_ROUND_CLOSEST__, before including this header file, the
+ 149:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****    algorithm can be made to round down, or round to closest integer,
+ 150:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****    respectively.
+ 151:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+ 152:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****    \note
+ 153:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+ 154:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****    The implementation of _delay_ms() based on
+ 155:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****    __builtin_avr_delay_cycles() is not backward compatible with older
+ 156:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****    implementations.  In order to get functionality backward compatible
+ 157:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****    with previous versions, the macro \c "__DELAY_BACKWARD_COMPATIBLE__"
+ 158:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****    must be defined before including this header file. Also, the
+ 159:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****    backward compatible algorithm will be chosen if the code is
+ 160:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****    compiled in a <em>freestanding environment</em> (GCC option
+ 161:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****    \c -ffreestanding), as the math functions required for rounding are
+ 162:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****    not available to the compiler then.
+ 163:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+ 164:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****  */
+ 165:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** void
+ 166:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** _delay_ms(double __ms)
+ 1319               		.loc 2 166 1 view .LVU305
+ 1320               	.LBB23:
+ 167:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** {
+ 168:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 	double __tmp ;
+ 1321               		.loc 2 168 2 view .LVU306
+ 169:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** #if __HAS_DELAY_CYCLES && defined(__OPTIMIZE__) && \
+ 170:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****   !defined(__DELAY_BACKWARD_COMPATIBLE__) &&	   \
+ 171:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h ****   __STDC_HOSTED__
+ 172:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 	uint32_t __ticks_dc;
+ 1322               		.loc 2 172 2 view .LVU307
+ 173:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 	extern void __builtin_avr_delay_cycles(unsigned long);
+ 1323               		.loc 2 173 2 view .LVU308
+ 174:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 	__tmp = ((F_CPU) / 1e3) * __ms;
+ 1324               		.loc 2 174 2 view .LVU309
+ 175:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+ 176:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 	#if defined(__DELAY_ROUND_DOWN__)
+ 177:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 		__ticks_dc = (uint32_t)fabs(__tmp);
+ 178:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+ 179:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 	#elif defined(__DELAY_ROUND_CLOSEST__)
+ 180:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 		__ticks_dc = (uint32_t)(fabs(__tmp)+0.5);
+ 181:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+ 182:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 	#else
+ 183:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 		//round up by default
+ 184:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 		__ticks_dc = (uint32_t)(ceil(fabs(__tmp)));
+ 1325               		.loc 2 184 3 view .LVU310
+ 185:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 	#endif
+ 186:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+ 187:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 	__builtin_avr_delay_cycles(__ticks_dc);
+ 1326               		.loc 2 187 2 view .LVU311
+ 1327 00bc 8FED      		ldi r24,lo8(11999)
+ 1328 00be 9EE2      		ldi r25,hi8(11999)
+ 1329 00c0 0197      	1:	sbiw r24,1
+ 1330 00c2 01F4      		brne 1b
+ 1331 00c4 00C0      		rjmp .
+ 1332 00c6 0000      		nop
+ 188:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+ 189:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** #else
+ 190:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 	uint16_t __ticks;
+ 191:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 	__tmp = ((F_CPU) / 4e3) * __ms;
+ 192:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 	if (__tmp < 1.0)
+ 193:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 		__ticks = 1;
+ 194:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 	else if (__tmp > 65535)
+ 195:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 	{
+ 196:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 		//	__ticks = requested delay in 1/10 ms
+ 197:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 		__ticks = (uint16_t) (__ms * 10.0);
+ 198:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 		while(__ticks)
+ 199:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 		{
+ 200:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 			// wait 1/10 ms
+ 201:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 			_delay_loop_2(((F_CPU) / 4e3) / 10);
+ 202:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 			__ticks --;
+ 203:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 		}
+ 204:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 		return;
+ 205:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 	}
+ 206:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 	else
+ 207:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 		__ticks = (uint16_t)__tmp;
+ 208:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 	_delay_loop_2(__ticks);
+ 209:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** #endif
+ 210:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** }
+ 1333               		.loc 2 210 1 is_stmt 0 view .LVU312
+ 1334 00c8 00C0      		rjmp .L178
+ 1335               	.LVL70:
+ 1336               	.L181:
+ 1337               		.loc 2 210 1 view .LVU313
+ 1338               	.LBE23:
+ 1339               	.LBE22:
+ 284:main.c        **** 				// Change currently edited (+)
+ 1340               		.loc 1 284 11 is_stmt 1 view .LVU314
+ 284:main.c        **** 				// Change currently edited (+)
+ 1341               		.loc 1 284 13 is_stmt 0 view .LVU315
+ 1342 00ca B499      		sbic 0x16,4
+ 1343 00cc 00C0      		rjmp .L183
+ 286:main.c        **** 				if(editing_mode){
+ 1344               		.loc 1 286 5 is_stmt 1 view .LVU316
+ 1345 00ce C098      		cbi 0x18,0
+ 287:main.c        **** 					change_full_date(currently_edited, '+');
+ 1346               		.loc 1 287 5 view .LVU317
+ 287:main.c        **** 					change_full_date(currently_edited, '+');
+ 1347               		.loc 1 287 8 is_stmt 0 view .LVU318
+ 1348 00d0 8091 0000 		lds r24,editing_mode
+ 287:main.c        **** 					change_full_date(currently_edited, '+');
+ 1349               		.loc 1 287 7 view .LVU319
+ 1350 00d4 8823      		tst r24
+ 1351 00d6 01F0      		breq .L184
+ 288:main.c        **** 					print_date(current_date);
+ 1352               		.loc 1 288 6 is_stmt 1 view .LVU320
+ 1353 00d8 6BE2      		ldi r22,lo8(43)
+ 1354 00da 8091 0000 		lds r24,currently_edited
+ 1355 00de 0E94 0000 		call change_full_date
+ 1356               	.LVL71:
+ 289:main.c        **** 					_delay_ms(150);	
+ 1357               		.loc 1 289 6 view .LVU321
+ 1358 00e2 2091 0000 		lds r18,current_date
+ 1359 00e6 3091 0000 		lds r19,current_date+1
+ 1360 00ea 4091 0000 		lds r20,current_date+2
+ 1361 00ee 5091 0000 		lds r21,current_date+3
+ 1362 00f2 6091 0000 		lds r22,current_date+4
+ 1363 00f6 7091 0000 		lds r23,current_date+5
+ 1364 00fa 8091 0000 		lds r24,current_date+6
+ 1365 00fe 0E94 0000 		call print_date
+ 1366               	.LVL72:
+ 290:main.c        **** 				} else if(blinds_editing_mode){
+ 1367               		.loc 1 290 6 view .LVU322
+ 1368               	.LBB24:
+ 1369               	.LBI24:
+ 166:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** {
+ 1370               		.loc 2 166 1 view .LVU323
+ 1371               	.LBB25:
+ 168:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** #if __HAS_DELAY_CYCLES && defined(__OPTIMIZE__) && \
+ 1372               		.loc 2 168 2 view .LVU324
+ 172:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 	extern void __builtin_avr_delay_cycles(unsigned long);
+ 1373               		.loc 2 172 2 view .LVU325
+ 173:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 	__tmp = ((F_CPU) / 1e3) * __ms;
+ 1374               		.loc 2 173 2 view .LVU326
+ 174:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+ 1375               		.loc 2 174 2 view .LVU327
+ 184:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 	#endif
+ 1376               		.loc 2 184 3 view .LVU328
+ 187:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+ 1377               		.loc 2 187 2 view .LVU329
+ 1378               	.L214:
+ 187:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+ 1379               		.loc 2 187 2 is_stmt 0 view .LVU330
+ 1380               	.LBE25:
+ 1381               	.LBE24:
+ 317:main.c        **** 							break;	
+ 1382               		.loc 1 317 8 is_stmt 1 view .LVU331
+ 1383               	.LBB26:
+ 1384               	.LBI26:
+ 166:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** {
+ 1385               		.loc 2 166 1 view .LVU332
+ 1386               	.LBB27:
+ 168:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** #if __HAS_DELAY_CYCLES && defined(__OPTIMIZE__) && \
+ 1387               		.loc 2 168 2 view .LVU333
+ 172:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 	extern void __builtin_avr_delay_cycles(unsigned long);
+ 1388               		.loc 2 172 2 view .LVU334
+ 173:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 	__tmp = ((F_CPU) / 1e3) * __ms;
+ 1389               		.loc 2 173 2 view .LVU335
+ 174:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+ 1390               		.loc 2 174 2 view .LVU336
+ 184:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 	#endif
+ 1391               		.loc 2 184 3 view .LVU337
+ 187:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+ 1392               		.loc 2 187 2 view .LVU338
+ 1393 0102 2FEF      		ldi r18,lo8(479999)
+ 1394 0104 32E5      		ldi r19,hi8(479999)
+ 1395 0106 87E0      		ldi r24,hlo8(479999)
+ 1396 0108 2150      	1:	subi r18,1
+ 1397 010a 3040      		sbci r19,0
+ 1398 010c 8040      		sbci r24,0
+ 1399 010e 01F4      		brne 1b
+ 1400 0110 00C0      		rjmp .L213
+ 1401               	.LVL73:
+ 1402               	.L184:
+ 187:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+ 1403               		.loc 2 187 2 is_stmt 0 view .LVU339
+ 1404               	.LBE27:
+ 1405               	.LBE26:
+ 291:main.c        **** 					switch(edited_blinds){
+ 1406               		.loc 1 291 12 is_stmt 1 view .LVU340
+ 291:main.c        **** 					switch(edited_blinds){
+ 1407               		.loc 1 291 15 is_stmt 0 view .LVU341
+ 1408 0112 8091 0000 		lds r24,blinds_editing_mode
+ 291:main.c        **** 					switch(edited_blinds){
+ 1409               		.loc 1 291 14 view .LVU342
+ 1410 0116 8823      		tst r24
+ 1411 0118 01F4      		brne .+2
+ 1412 011a 00C0      		rjmp .L180
+ 292:main.c        **** 						case 0:
+ 1413               		.loc 1 292 6 is_stmt 1 view .LVU343
+ 1414 011c 8091 0000 		lds r24,edited_blinds
+ 1415 0120 8823      		tst r24
+ 1416 0122 01F0      		breq .L185
+ 1417 0124 8130      		cpi r24,lo8(1)
+ 1418 0126 01F0      		breq .+2
+ 1419 0128 00C0      		rjmp .L180
+ 299:main.c        **** 							print_blinds_harmonogram(&blinds_night, "Night");
+ 1420               		.loc 1 299 8 view .LVU344
+ 1421 012a 8091 0000 		lds r24,currently_edited
+ 1422 012e 612F      		mov r22,r17
+ 1423 0130 0E94 0000 		call __udivmodqi4
+ 1424 0134 4BE2      		ldi r20,lo8(43)
+ 1425 0136 692F      		mov r22,r25
+ 1426 0138 80E0      		ldi r24,lo8(blinds_night)
+ 1427 013a 90E0      		ldi r25,hi8(blinds_night)
+ 1428 013c 0E94 0000 		call change_blinds_harmonogram
+ 1429               	.LVL74:
+ 300:main.c        **** 							_delay_ms(150);
+ 1430               		.loc 1 300 8 view .LVU345
+ 1431 0140 60E0      		ldi r22,lo8(.LC4)
+ 1432 0142 70E0      		ldi r23,hi8(.LC4)
+ 1433 0144 80E0      		ldi r24,lo8(blinds_night)
+ 1434 0146 90E0      		ldi r25,hi8(blinds_night)
+ 1435 0148 0E94 0000 		call print_blinds_harmonogram
+ 1436               	.LVL75:
+ 301:main.c        **** 							break;
+ 1437               		.loc 1 301 8 view .LVU346
+ 1438               	.LBB29:
+ 1439               	.LBI29:
+ 166:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** {
+ 1440               		.loc 2 166 1 view .LVU347
+ 1441               	.LBB30:
+ 168:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** #if __HAS_DELAY_CYCLES && defined(__OPTIMIZE__) && \
+ 1442               		.loc 2 168 2 view .LVU348
+ 172:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 	extern void __builtin_avr_delay_cycles(unsigned long);
+ 1443               		.loc 2 172 2 view .LVU349
+ 173:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 	__tmp = ((F_CPU) / 1e3) * __ms;
+ 1444               		.loc 2 173 2 view .LVU350
+ 174:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+ 1445               		.loc 2 174 2 view .LVU351
+ 184:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 	#endif
+ 1446               		.loc 2 184 3 view .LVU352
+ 187:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+ 1447               		.loc 2 187 2 view .LVU353
+ 1448 014c 8FEF      		ldi r24,lo8(479999)
+ 1449 014e 92E5      		ldi r25,hi8(479999)
+ 1450 0150 27E0      		ldi r18,hlo8(479999)
+ 1451 0152 8150      	1:	subi r24,1
+ 1452 0154 9040      		sbci r25,0
+ 1453 0156 2040      		sbci r18,0
+ 1454 0158 01F4      		brne 1b
+ 1455               	.LVL76:
+ 1456               	.L213:
+ 187:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+ 1457               		.loc 2 187 2 is_stmt 0 view .LVU354
+ 1458               	.LBE30:
+ 1459               	.LBE29:
+ 1460               	.LBB31:
+ 1461               	.LBB28:
+ 1462 015a 00C0      		rjmp .
+ 1463 015c 0000      		nop
+ 1464               		.loc 2 210 1 view .LVU355
+ 1465 015e 00C0      		rjmp .L180
+ 1466               	.L185:
+ 1467               	.LBE28:
+ 1468               	.LBE31:
+ 294:main.c        **** 							print_blinds_harmonogram(&blinds_morning, "Morning");
+ 1469               		.loc 1 294 8 is_stmt 1 view .LVU356
+ 1470 0160 8091 0000 		lds r24,currently_edited
+ 1471 0164 612F      		mov r22,r17
+ 1472 0166 0E94 0000 		call __udivmodqi4
+ 1473 016a 4BE2      		ldi r20,lo8(43)
+ 1474 016c 692F      		mov r22,r25
+ 1475 016e 80E0      		ldi r24,lo8(blinds_morning)
+ 1476 0170 90E0      		ldi r25,hi8(blinds_morning)
+ 1477 0172 0E94 0000 		call change_blinds_harmonogram
+ 1478               	.LVL77:
+ 295:main.c        **** 							_delay_ms(150);
+ 1479               		.loc 1 295 8 view .LVU357
+ 1480 0176 60E0      		ldi r22,lo8(.LC3)
+ 1481 0178 70E0      		ldi r23,hi8(.LC3)
+ 1482 017a 80E0      		ldi r24,lo8(blinds_morning)
+ 1483 017c 90E0      		ldi r25,hi8(blinds_morning)
+ 1484               	.L216:
+ 321:main.c        **** 							_delay_ms(150);	
+ 1485               		.loc 1 321 8 is_stmt 0 view .LVU358
+ 1486 017e 0E94 0000 		call print_blinds_harmonogram
+ 1487               	.LVL78:
+ 322:main.c        **** 							break;
+ 1488               		.loc 1 322 8 is_stmt 1 view .LVU359
+ 1489               	.LBB32:
+ 1490               	.LBI32:
+ 166:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** {
+ 1491               		.loc 2 166 1 view .LVU360
+ 1492               	.LBB33:
+ 168:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** #if __HAS_DELAY_CYCLES && defined(__OPTIMIZE__) && \
+ 1493               		.loc 2 168 2 view .LVU361
+ 172:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 	extern void __builtin_avr_delay_cycles(unsigned long);
+ 1494               		.loc 2 172 2 view .LVU362
+ 173:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 	__tmp = ((F_CPU) / 1e3) * __ms;
+ 1495               		.loc 2 173 2 view .LVU363
+ 174:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+ 1496               		.loc 2 174 2 view .LVU364
+ 184:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 	#endif
+ 1497               		.loc 2 184 3 view .LVU365
+ 187:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+ 1498               		.loc 2 187 2 view .LVU366
+ 1499 0182 9FEF      		ldi r25,lo8(479999)
+ 1500 0184 22E5      		ldi r18,hi8(479999)
+ 1501 0186 37E0      		ldi r19,hlo8(479999)
+ 1502 0188 9150      	1:	subi r25,1
+ 1503 018a 2040      		sbci r18,0
+ 1504 018c 3040      		sbci r19,0
+ 1505 018e 01F4      		brne 1b
+ 1506 0190 00C0      		rjmp .L213
+ 1507               	.LVL79:
+ 1508               	.L183:
+ 187:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+ 1509               		.loc 2 187 2 is_stmt 0 view .LVU367
+ 1510               	.LBE33:
+ 1511               	.LBE32:
+ 305:main.c        **** 				// Change currently edited (-)
+ 1512               		.loc 1 305 11 is_stmt 1 view .LVU368
+ 305:main.c        **** 				// Change currently edited (-)
+ 1513               		.loc 1 305 13 is_stmt 0 view .LVU369
+ 1514 0192 B599      		sbic 0x16,5
+ 1515 0194 00C0      		rjmp .L187
+ 307:main.c        **** 				if(editing_mode){
+ 1516               		.loc 1 307 5 is_stmt 1 view .LVU370
+ 1517 0196 C098      		cbi 0x18,0
+ 308:main.c        **** 					change_full_date(currently_edited, '-');
+ 1518               		.loc 1 308 5 view .LVU371
+ 308:main.c        **** 					change_full_date(currently_edited, '-');
+ 1519               		.loc 1 308 8 is_stmt 0 view .LVU372
+ 1520 0198 8091 0000 		lds r24,editing_mode
+ 308:main.c        **** 					change_full_date(currently_edited, '-');
+ 1521               		.loc 1 308 7 view .LVU373
+ 1522 019c 8823      		tst r24
+ 1523 019e 01F0      		breq .L188
+ 309:main.c        **** 					print_date(current_date);
+ 1524               		.loc 1 309 6 is_stmt 1 view .LVU374
+ 1525 01a0 6DE2      		ldi r22,lo8(45)
+ 1526 01a2 8091 0000 		lds r24,currently_edited
+ 1527 01a6 0E94 0000 		call change_full_date
+ 1528               	.LVL80:
+ 310:main.c        **** 					_delay_ms(150);
+ 1529               		.loc 1 310 6 view .LVU375
+ 1530 01aa 2091 0000 		lds r18,current_date
+ 1531 01ae 3091 0000 		lds r19,current_date+1
+ 1532 01b2 4091 0000 		lds r20,current_date+2
+ 1533 01b6 5091 0000 		lds r21,current_date+3
+ 1534 01ba 6091 0000 		lds r22,current_date+4
+ 1535 01be 7091 0000 		lds r23,current_date+5
+ 1536 01c2 8091 0000 		lds r24,current_date+6
+ 1537 01c6 0E94 0000 		call print_date
+ 1538               	.LVL81:
+ 311:main.c        **** 				} else if(blinds_editing_mode){
+ 1539               		.loc 1 311 6 view .LVU376
+ 1540               	.LBB34:
+ 1541               	.LBI34:
+ 166:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** {
+ 1542               		.loc 2 166 1 view .LVU377
+ 1543               	.LBB35:
+ 168:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** #if __HAS_DELAY_CYCLES && defined(__OPTIMIZE__) && \
+ 1544               		.loc 2 168 2 view .LVU378
+ 172:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 	extern void __builtin_avr_delay_cycles(unsigned long);
+ 1545               		.loc 2 172 2 view .LVU379
+ 173:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 	__tmp = ((F_CPU) / 1e3) * __ms;
+ 1546               		.loc 2 173 2 view .LVU380
+ 174:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+ 1547               		.loc 2 174 2 view .LVU381
+ 184:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 	#endif
+ 1548               		.loc 2 184 3 view .LVU382
+ 187:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+ 1549               		.loc 2 187 2 view .LVU383
+ 1550 01ca 3FEF      		ldi r19,lo8(479999)
+ 1551 01cc 82E5      		ldi r24,hi8(479999)
+ 1552 01ce 97E0      		ldi r25,hlo8(479999)
+ 1553 01d0 3150      	1:	subi r19,1
+ 1554 01d2 8040      		sbci r24,0
+ 1555 01d4 9040      		sbci r25,0
+ 1556 01d6 01F4      		brne 1b
+ 1557 01d8 00C0      		rjmp .L213
+ 1558               	.LVL82:
+ 1559               	.L188:
+ 187:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+ 1560               		.loc 2 187 2 is_stmt 0 view .LVU384
+ 1561               	.LBE35:
+ 1562               	.LBE34:
+ 312:main.c        **** 					switch(edited_blinds){
+ 1563               		.loc 1 312 12 is_stmt 1 view .LVU385
+ 312:main.c        **** 					switch(edited_blinds){
+ 1564               		.loc 1 312 15 is_stmt 0 view .LVU386
+ 1565 01da 8091 0000 		lds r24,blinds_editing_mode
+ 312:main.c        **** 					switch(edited_blinds){
+ 1566               		.loc 1 312 14 view .LVU387
+ 1567 01de 8823      		tst r24
+ 1568 01e0 01F4      		brne .+2
+ 1569 01e2 00C0      		rjmp .L180
+ 313:main.c        **** 						case 0:
+ 1570               		.loc 1 313 6 is_stmt 1 view .LVU388
+ 1571 01e4 8091 0000 		lds r24,edited_blinds
+ 1572 01e8 8823      		tst r24
+ 1573 01ea 01F0      		breq .L189
+ 1574 01ec 8130      		cpi r24,lo8(1)
+ 1575 01ee 01F0      		breq .+2
+ 1576 01f0 00C0      		rjmp .L180
+ 320:main.c        **** 							print_blinds_harmonogram(&blinds_night, "Night");
+ 1577               		.loc 1 320 8 view .LVU389
+ 1578 01f2 8091 0000 		lds r24,currently_edited
+ 1579 01f6 612F      		mov r22,r17
+ 1580 01f8 0E94 0000 		call __udivmodqi4
+ 1581 01fc 4DE2      		ldi r20,lo8(45)
+ 1582 01fe 692F      		mov r22,r25
+ 1583 0200 80E0      		ldi r24,lo8(blinds_night)
+ 1584 0202 90E0      		ldi r25,hi8(blinds_night)
+ 1585 0204 0E94 0000 		call change_blinds_harmonogram
+ 1586               	.LVL83:
+ 321:main.c        **** 							_delay_ms(150);	
+ 1587               		.loc 1 321 8 view .LVU390
+ 1588 0208 60E0      		ldi r22,lo8(.LC4)
+ 1589 020a 70E0      		ldi r23,hi8(.LC4)
+ 1590 020c 80E0      		ldi r24,lo8(blinds_night)
+ 1591 020e 90E0      		ldi r25,hi8(blinds_night)
+ 1592 0210 00C0      		rjmp .L216
+ 1593               	.L189:
+ 315:main.c        **** 							print_blinds_harmonogram(&blinds_morning, "Morning");
+ 1594               		.loc 1 315 8 view .LVU391
+ 1595 0212 8091 0000 		lds r24,currently_edited
+ 1596 0216 612F      		mov r22,r17
+ 1597 0218 0E94 0000 		call __udivmodqi4
+ 1598 021c 4DE2      		ldi r20,lo8(45)
+ 1599 021e 692F      		mov r22,r25
+ 1600 0220 80E0      		ldi r24,lo8(blinds_morning)
+ 1601 0222 90E0      		ldi r25,hi8(blinds_morning)
+ 1602 0224 0E94 0000 		call change_blinds_harmonogram
+ 1603               	.LVL84:
+ 316:main.c        **** 							_delay_ms(150);
+ 1604               		.loc 1 316 8 view .LVU392
+ 1605 0228 60E0      		ldi r22,lo8(.LC3)
+ 1606 022a 70E0      		ldi r23,hi8(.LC3)
+ 1607 022c 80E0      		ldi r24,lo8(blinds_morning)
+ 1608 022e 90E0      		ldi r25,hi8(blinds_morning)
+ 1609 0230 0E94 0000 		call print_blinds_harmonogram
+ 1610               	.LVL85:
+ 1611 0234 00C0      		rjmp .L214
+ 1612               	.L187:
+ 326:main.c        **** 				// Switch currently edited element of datetime struct
+ 1613               		.loc 1 326 11 view .LVU393
+ 326:main.c        **** 				// Switch currently edited element of datetime struct
+ 1614               		.loc 1 326 13 is_stmt 0 view .LVU394
+ 1615 0236 B699      		sbic 0x16,6
+ 1616 0238 00C0      		rjmp .L192
+ 328:main.c        **** 				currently_edited = (currently_edited + 1) % 6;
+ 1617               		.loc 1 328 5 is_stmt 1 view .LVU395
+ 1618 023a C098      		cbi 0x18,0
+ 329:main.c        **** 				_delay_ms(300);
+ 1619               		.loc 1 329 5 view .LVU396
+ 329:main.c        **** 				_delay_ms(300);
+ 1620               		.loc 1 329 42 is_stmt 0 view .LVU397
+ 1621 023c 8091 0000 		lds r24,currently_edited
+ 1622 0240 90E0      		ldi r25,0
+ 1623 0242 0196      		adiw r24,1
+ 329:main.c        **** 				_delay_ms(300);
+ 1624               		.loc 1 329 47 view .LVU398
+ 1625 0244 BE01      		movw r22,r28
+ 1626 0246 0E94 0000 		call __divmodhi4
+ 329:main.c        **** 				_delay_ms(300);
+ 1627               		.loc 1 329 22 view .LVU399
+ 1628 024a 8093 0000 		sts currently_edited,r24
+ 330:main.c        **** 			} else if(!(PINB & (1<<SWITCH_SET))){
+ 1629               		.loc 1 330 5 is_stmt 1 view .LVU400
+ 1630               	.LVL86:
+ 1631               	.LBB36:
+ 1632               	.LBI36:
+ 166:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** {
+ 1633               		.loc 2 166 1 view .LVU401
+ 1634               	.LBB37:
+ 168:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** #if __HAS_DELAY_CYCLES && defined(__OPTIMIZE__) && \
+ 1635               		.loc 2 168 2 view .LVU402
+ 172:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 	extern void __builtin_avr_delay_cycles(unsigned long);
+ 1636               		.loc 2 172 2 view .LVU403
+ 173:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 	__tmp = ((F_CPU) / 1e3) * __ms;
+ 1637               		.loc 2 173 2 view .LVU404
+ 174:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+ 1638               		.loc 2 174 2 view .LVU405
+ 184:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 	#endif
+ 1639               		.loc 2 184 3 view .LVU406
+ 187:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+ 1640               		.loc 2 187 2 view .LVU407
+ 1641 024e 8FEF      		ldi r24,lo8(959999)
+ 1642 0250 95EA      		ldi r25,hi8(959999)
+ 1643 0252 2EE0      		ldi r18,hlo8(959999)
+ 1644 0254 8150      	1:	subi r24,1
+ 1645 0256 9040      		sbci r25,0
+ 1646 0258 2040      		sbci r18,0
+ 1647 025a 01F4      		brne 1b
+ 1648 025c 00C0      		rjmp .L213
+ 1649               	.LVL87:
+ 1650               	.L192:
+ 187:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+ 1651               		.loc 2 187 2 is_stmt 0 view .LVU408
+ 1652               	.LBE37:
+ 1653               	.LBE36:
+ 331:main.c        **** 				// Accept changes
+ 1654               		.loc 1 331 11 is_stmt 1 view .LVU409
+ 331:main.c        **** 				// Accept changes
+ 1655               		.loc 1 331 13 is_stmt 0 view .LVU410
+ 1656 025e B799      		sbic 0x16,7
+ 1657 0260 00C0      		rjmp .L193
+ 333:main.c        **** 				if(editing_mode == 1){rtc_set_date_time(&current_date);}
+ 1658               		.loc 1 333 5 is_stmt 1 view .LVU411
+ 1659 0262 C098      		cbi 0x18,0
+ 334:main.c        **** 				currently_edited = 0;
+ 1660               		.loc 1 334 5 view .LVU412
+ 334:main.c        **** 				currently_edited = 0;
+ 1661               		.loc 1 334 21 is_stmt 0 view .LVU413
+ 1662 0264 8091 0000 		lds r24,editing_mode
+ 334:main.c        **** 				currently_edited = 0;
+ 1663               		.loc 1 334 7 view .LVU414
+ 1664 0268 8130      		cpi r24,lo8(1)
+ 1665 026a 01F4      		brne .L194
+ 334:main.c        **** 				currently_edited = 0;
+ 1666               		.loc 1 334 27 is_stmt 1 discriminator 1 view .LVU415
+ 1667 026c 80E0      		ldi r24,lo8(current_date)
+ 1668 026e 90E0      		ldi r25,hi8(current_date)
+ 1669 0270 0E94 0000 		call rtc_set_date_time
+ 1670               	.LVL88:
+ 1671               	.L194:
+ 335:main.c        **** 				blinds_editing_mode = 0;
+ 1672               		.loc 1 335 5 view .LVU416
+ 335:main.c        **** 				blinds_editing_mode = 0;
+ 1673               		.loc 1 335 22 is_stmt 0 view .LVU417
+ 1674 0274 1092 0000 		sts currently_edited,__zero_reg__
+ 336:main.c        **** 				update_data_from_ISR = 1;
+ 1675               		.loc 1 336 5 is_stmt 1 view .LVU418
+ 336:main.c        **** 				update_data_from_ISR = 1;
+ 1676               		.loc 1 336 25 is_stmt 0 view .LVU419
+ 1677 0278 1092 0000 		sts blinds_editing_mode,__zero_reg__
+ 337:main.c        **** 				_delay_ms(100);
+ 1678               		.loc 1 337 5 is_stmt 1 view .LVU420
+ 337:main.c        **** 				_delay_ms(100);
+ 1679               		.loc 1 337 26 is_stmt 0 view .LVU421
+ 1680 027c F092 0000 		sts update_data_from_ISR,r15
+ 338:main.c        **** 			} else if(!(PINC & (1<<SWITCH_BLINDS))){
+ 1681               		.loc 1 338 5 is_stmt 1 view .LVU422
+ 1682               	.LVL89:
+ 1683               	.LBB38:
+ 1684               	.LBI38:
+ 166:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** {
+ 1685               		.loc 2 166 1 view .LVU423
+ 1686               	.LBB39:
+ 168:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** #if __HAS_DELAY_CYCLES && defined(__OPTIMIZE__) && \
+ 1687               		.loc 2 168 2 view .LVU424
+ 172:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 	extern void __builtin_avr_delay_cycles(unsigned long);
+ 1688               		.loc 2 172 2 view .LVU425
+ 173:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 	__tmp = ((F_CPU) / 1e3) * __ms;
+ 1689               		.loc 2 173 2 view .LVU426
+ 174:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+ 1690               		.loc 2 174 2 view .LVU427
+ 184:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 	#endif
+ 1691               		.loc 2 184 3 view .LVU428
+ 187:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+ 1692               		.loc 2 187 2 view .LVU429
+ 1693 0280 3FEF      		ldi r19,lo8(319999)
+ 1694 0282 81EE      		ldi r24,hi8(319999)
+ 1695 0284 94E0      		ldi r25,hlo8(319999)
+ 1696 0286 3150      	1:	subi r19,1
+ 1697 0288 8040      		sbci r24,0
+ 1698 028a 9040      		sbci r25,0
+ 1699 028c 01F4      		brne 1b
+ 1700 028e 00C0      		rjmp .L213
+ 1701               	.LVL90:
+ 1702               	.L193:
+ 187:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+ 1703               		.loc 2 187 2 is_stmt 0 view .LVU430
+ 1704               	.LBE39:
+ 1705               	.LBE38:
+ 339:main.c        **** 				// Change blinds routine
+ 1706               		.loc 1 339 11 is_stmt 1 view .LVU431
+ 339:main.c        **** 				// Change blinds routine
+ 1707               		.loc 1 339 13 is_stmt 0 view .LVU432
+ 1708 0290 9899      		sbic 0x13,0
+ 1709 0292 00C0      		rjmp .L195
+ 341:main.c        **** 				update_data_from_ISR = 0;
+ 1710               		.loc 1 341 5 is_stmt 1 view .LVU433
+ 1711 0294 C098      		cbi 0x18,0
+ 342:main.c        **** 				if(!editing_mode){
+ 1712               		.loc 1 342 5 view .LVU434
+ 342:main.c        **** 				if(!editing_mode){
+ 1713               		.loc 1 342 26 is_stmt 0 view .LVU435
+ 1714 0296 1092 0000 		sts update_data_from_ISR,__zero_reg__
+ 343:main.c        **** 					blinds_editing_mode = 1;
+ 1715               		.loc 1 343 5 is_stmt 1 view .LVU436
+ 343:main.c        **** 					blinds_editing_mode = 1;
+ 1716               		.loc 1 343 8 is_stmt 0 view .LVU437
+ 1717 029a 8091 0000 		lds r24,editing_mode
+ 343:main.c        **** 					blinds_editing_mode = 1;
+ 1718               		.loc 1 343 7 view .LVU438
+ 1719 029e 8111      		cpse r24,__zero_reg__
+ 1720 02a0 00C0      		rjmp .L180
+ 344:main.c        **** 					edited_blinds = (edited_blinds + 1) % 2;
+ 1721               		.loc 1 344 6 is_stmt 1 view .LVU439
+ 344:main.c        **** 					edited_blinds = (edited_blinds + 1) % 2;
+ 1722               		.loc 1 344 26 is_stmt 0 view .LVU440
+ 1723 02a2 F092 0000 		sts blinds_editing_mode,r15
+ 345:main.c        **** 					switch(edited_blinds){
+ 1724               		.loc 1 345 6 is_stmt 1 view .LVU441
+ 345:main.c        **** 					switch(edited_blinds){
+ 1725               		.loc 1 345 37 is_stmt 0 view .LVU442
+ 1726 02a6 8091 0000 		lds r24,edited_blinds
+ 1727 02aa 90E0      		ldi r25,0
+ 1728 02ac 0196      		adiw r24,1
+ 345:main.c        **** 					switch(edited_blinds){
+ 1729               		.loc 1 345 42 view .LVU443
+ 1730 02ae 8170      		andi r24,1
+ 1731 02b0 9927      		clr r25
+ 345:main.c        **** 					switch(edited_blinds){
+ 1732               		.loc 1 345 20 view .LVU444
+ 1733 02b2 8093 0000 		sts edited_blinds,r24
+ 346:main.c        **** 						case 0: //morning routine
+ 1734               		.loc 1 346 6 is_stmt 1 view .LVU445
+ 1735 02b6 8091 0000 		lds r24,edited_blinds
+ 1736 02ba 8823      		tst r24
+ 1737 02bc 01F0      		breq .L196
+ 1738 02be 8130      		cpi r24,lo8(1)
+ 1739 02c0 01F0      		breq .L197
+ 1740               	.L198:
+ 354:main.c        **** 				}
+ 1741               		.loc 1 354 6 view .LVU446
+ 1742               	.LVL91:
+ 1743               	.LBB40:
+ 1744               	.LBI40:
+ 166:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** {
+ 1745               		.loc 2 166 1 view .LVU447
+ 1746               	.LBB41:
+ 168:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** #if __HAS_DELAY_CYCLES && defined(__OPTIMIZE__) && \
+ 1747               		.loc 2 168 2 view .LVU448
+ 172:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 	extern void __builtin_avr_delay_cycles(unsigned long);
+ 1748               		.loc 2 172 2 view .LVU449
+ 173:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 	__tmp = ((F_CPU) / 1e3) * __ms;
+ 1749               		.loc 2 173 2 view .LVU450
+ 174:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+ 1750               		.loc 2 174 2 view .LVU451
+ 184:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 	#endif
+ 1751               		.loc 2 184 3 view .LVU452
+ 187:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+ 1752               		.loc 2 187 2 view .LVU453
+ 1753 02c2 2FEF      		ldi r18,lo8(959999)
+ 1754 02c4 35EA      		ldi r19,hi8(959999)
+ 1755 02c6 8EE0      		ldi r24,hlo8(959999)
+ 1756 02c8 2150      	1:	subi r18,1
+ 1757 02ca 3040      		sbci r19,0
+ 1758 02cc 8040      		sbci r24,0
+ 1759 02ce 01F4      		brne 1b
+ 1760 02d0 00C0      		rjmp .L213
+ 1761               	.LVL92:
+ 1762               	.L196:
+ 187:e:\avr-gcc-10.1.0-x64-windows\avr\include\util\delay.h **** 
+ 1763               		.loc 2 187 2 is_stmt 0 view .LVU454
+ 1764               	.LBE41:
+ 1765               	.LBE40:
+ 348:main.c        **** 							break;
+ 1766               		.loc 1 348 8 is_stmt 1 view .LVU455
+ 1767 02d2 60E0      		ldi r22,lo8(.LC3)
+ 1768 02d4 70E0      		ldi r23,hi8(.LC3)
+ 1769 02d6 80E0      		ldi r24,lo8(blinds_morning)
+ 1770 02d8 90E0      		ldi r25,hi8(blinds_morning)
+ 1771               	.L212:
+ 351:main.c        **** 							break;
+ 1772               		.loc 1 351 8 is_stmt 0 view .LVU456
+ 1773 02da 0E94 0000 		call print_blinds_harmonogram
+ 1774               	.LVL93:
+ 352:main.c        **** 					}
+ 1775               		.loc 1 352 8 is_stmt 1 view .LVU457
+ 1776 02de 00C0      		rjmp .L198
+ 1777               	.L197:
+ 351:main.c        **** 							break;
+ 1778               		.loc 1 351 8 view .LVU458
+ 1779 02e0 60E0      		ldi r22,lo8(.LC4)
+ 1780 02e2 70E0      		ldi r23,hi8(.LC4)
+ 1781 02e4 80E0      		ldi r24,lo8(blinds_night)
+ 1782 02e6 90E0      		ldi r25,hi8(blinds_night)
+ 1783 02e8 00C0      		rjmp .L212
+ 1784               	.L195:
+ 357:main.c        **** 			}
+ 1785               		.loc 1 357 5 view .LVU459
+ 1786 02ea C09A      		sbi 0x18,0
+ 1787 02ec 00C0      		rjmp .L180
+ 1788               	.L200:
+ 364:main.c        **** 			step = step % 4;
+ 1789               		.loc 1 364 9 view .LVU460
+ 364:main.c        **** 			step = step % 4;
+ 1790               		.loc 1 364 13 is_stmt 0 view .LVU461
+ 1791 02ee 8150      		subi r24,lo8(-(-1))
+ 1792 02f0 00C0      		rjmp .L215
+ 1793               	.L199:
+ 367:main.c        **** 		} else {
+ 368:main.c        **** 			PORTD = 0x00;
+ 1794               		.loc 1 368 4 is_stmt 1 view .LVU462
+ 1795               		.loc 1 368 10 is_stmt 0 view .LVU463
+ 1796 02f2 12BA      		out 0x12,__zero_reg__
+ 1797 02f4 00C0      		rjmp .L178
+ 1798               		.cfi_endproc
+ 1799               	.LFE14:
+ 1801               	.global	blinds_night
+ 1802               		.data
+ 1805               	blinds_night:
+ 1806 0000 00        		.byte	0
+ 1807 0001 00        		.byte	0
+ 1808 0002 28        		.byte	40
+ 1809 0003 01        		.byte	1
+ 1810 0004 01        		.byte	1
+ 1811 0005 01        		.byte	1
+ 1812 0006 15        		.byte	21
+ 1813               	.global	blinds_morning
+ 1816               	blinds_morning:
+ 1817 0007 00        		.byte	0
+ 1818 0008 00        		.byte	0
+ 1819 0009 1E        		.byte	30
+ 1820 000a 01        		.byte	1
+ 1821 000b 01        		.byte	1
+ 1822 000c 01        		.byte	1
+ 1823 000d 15        		.byte	21
+ 1824               	.global	current_date
+ 1827               	current_date:
+ 1828 000e 00        		.byte	0
+ 1829 000f 00        		.byte	0
+ 1830 0010 00        		.byte	0
+ 1831 0011 01        		.byte	1
+ 1832 0012 01        		.byte	1
+ 1833 0013 01        		.byte	1
+ 1834 0014 15        		.byte	21
+ 1835               	.global	motor_state
+ 1836               		.section .bss
+ 1839               	motor_state:
+ 1840 0000 00        		.zero	1
+ 1841               	.global	direction
+ 1844               	direction:
+ 1845 0001 00        		.zero	1
+ 1846               	.global	step
+ 1849               	step:
+ 1850 0002 00        		.zero	1
+ 1851               	.global	currently_edited
+ 1854               	currently_edited:
+ 1855 0003 00        		.zero	1
+ 1856               	.global	SHADING
+ 1857               		.section	.rodata
+ 1860               	SHADING:
+ 1861 0000 F401      		.word	500
+ 1862               	.global	shading_time
+ 1863               		.section .bss
+ 1866               	shading_time:
+ 1867 0004 0000      		.zero	2
+ 1868               	.global	edited_blinds
+ 1869               		.data
+ 1872               	edited_blinds:
+ 1873 0015 01        		.byte	1
+ 1874               	.global	blinds_editing_mode
+ 1875               		.section .bss
+ 1878               	blinds_editing_mode:
+ 1879 0006 00        		.zero	1
+ 1880               	.global	timer2_counter
+ 1883               	timer2_counter:
+ 1884 0007 00        		.zero	1
+ 1885               	.global	editing_mode
+ 1888               	editing_mode:
+ 1889 0008 00        		.zero	1
+ 1890               	.global	check_buttons
+ 1893               	check_buttons:
+ 1894 0009 00        		.zero	1
+ 1895               	.global	update_data_from_ISR
+ 1896               		.data
+ 1899               	update_data_from_ISR:
+ 1900 0016 01        		.byte	1
+ 1901               		.text
+ 1902               	.Letext0:
+ 1903               		.file 3 "e:\\avr-gcc-10.1.0-x64-windows\\avr\\include\\stdint.h"
+ 1904               		.file 4 "rtc.h"
+ 1905               		.file 5 "lcd.h"
+ 1906               		.file 6 "twi.h"
+ 1907               		.file 7 "e:\\avr-gcc-10.1.0-x64-windows\\avr\\include\\stdio.h"
+DEFINED SYMBOLS
+                            *ABS*:0000000000000000 main.c
+C:\Users\KRZYSZ~1\AppData\Local\Temp\ccJffHSv.s:2      *ABS*:000000000000003e __SP_H__
+C:\Users\KRZYSZ~1\AppData\Local\Temp\ccJffHSv.s:3      *ABS*:000000000000003d __SP_L__
+C:\Users\KRZYSZ~1\AppData\Local\Temp\ccJffHSv.s:4      *ABS*:000000000000003f __SREG__
+C:\Users\KRZYSZ~1\AppData\Local\Temp\ccJffHSv.s:5      *ABS*:0000000000000000 __tmp_reg__
+C:\Users\KRZYSZ~1\AppData\Local\Temp\ccJffHSv.s:6      *ABS*:0000000000000001 __zero_reg__
+C:\Users\KRZYSZ~1\AppData\Local\Temp\ccJffHSv.s:18     .text:0000000000000000 __vector_1
+C:\Users\KRZYSZ~1\AppData\Local\Temp\ccJffHSv.s:1899   .data:0000000000000016 update_data_from_ISR
+C:\Users\KRZYSZ~1\AppData\Local\Temp\ccJffHSv.s:1816   .data:0000000000000007 blinds_morning
+C:\Users\KRZYSZ~1\AppData\Local\Temp\ccJffHSv.s:1839   .bss:0000000000000000 motor_state
+C:\Users\KRZYSZ~1\AppData\Local\Temp\ccJffHSv.s:1844   .bss:0000000000000001 direction
+C:\Users\KRZYSZ~1\AppData\Local\Temp\ccJffHSv.s:1805   .data:0000000000000000 blinds_night
+C:\Users\KRZYSZ~1\AppData\Local\Temp\ccJffHSv.s:257    .text:0000000000000124 __vector_4
+                            *ABS*:0000000000000003 __gcc_isr.n_pushed.001
+C:\Users\KRZYSZ~1\AppData\Local\Temp\ccJffHSv.s:1883   .bss:0000000000000007 timer2_counter
+C:\Users\KRZYSZ~1\AppData\Local\Temp\ccJffHSv.s:1893   .bss:0000000000000009 check_buttons
+C:\Users\KRZYSZ~1\AppData\Local\Temp\ccJffHSv.s:1866   .bss:0000000000000004 shading_time
+C:\Users\KRZYSZ~1\AppData\Local\Temp\ccJffHSv.s:341    .text:0000000000000198 print_date
+C:\Users\KRZYSZ~1\AppData\Local\Temp\ccJffHSv.s:439    .text:0000000000000220 change_full_date
+C:\Users\KRZYSZ~1\AppData\Local\Temp\ccJffHSv.s:1827   .data:000000000000000e current_date
+C:\Users\KRZYSZ~1\AppData\Local\Temp\ccJffHSv.s:890    .text:0000000000000442 change_blinds_harmonogram
+C:\Users\KRZYSZ~1\AppData\Local\Temp\ccJffHSv.s:1032   .text:00000000000004b8 print_blinds_harmonogram
+C:\Users\KRZYSZ~1\AppData\Local\Temp\ccJffHSv.s:1153   .text.startup:0000000000000000 main
+C:\Users\KRZYSZ~1\AppData\Local\Temp\ccJffHSv.s:1878   .bss:0000000000000006 blinds_editing_mode
+C:\Users\KRZYSZ~1\AppData\Local\Temp\ccJffHSv.s:1888   .bss:0000000000000008 editing_mode
+C:\Users\KRZYSZ~1\AppData\Local\Temp\ccJffHSv.s:1849   .bss:0000000000000002 step
+C:\Users\KRZYSZ~1\AppData\Local\Temp\ccJffHSv.s:1854   .bss:0000000000000003 currently_edited
+C:\Users\KRZYSZ~1\AppData\Local\Temp\ccJffHSv.s:1872   .data:0000000000000015 edited_blinds
+C:\Users\KRZYSZ~1\AppData\Local\Temp\ccJffHSv.s:1860   .rodata:0000000000000000 SHADING
+
+UNDEFINED SYMBOLS
+rtc_get_date_time
+lcd_set_xy
+printf
+lcd_clear
+__udivmodqi4
+__divmodhi4
+lcdinit
+I2C_init
+rtc_init
+rtc_set_date_time
+__do_copy_data
+__do_clear_bss
