@@ -1,4 +1,4 @@
-/* File: PROJECT
+/* File: automatic-blinds
 *
 * Created on: 06/2021
 * Author: Krzysztof Palmi <01141448@pw.edu.pl>
@@ -8,20 +8,20 @@
 #endif
 
 /*
-Rejestr TWBR = (16MHz / (100kHz) - 16)/2
+Register TWBR = (16MHz / (100kHz) - 16)/2
 ---------------------------------------
-PODLACZENIE: 
-LCD : RS -> PA2, E -> PA3, D4-D7 -> PA4-PA7
-CLK -> PD2
-S1-S5 -> PB7-PB3
-S8 -> PC0
-
+Connection and usage:
+https://www.overleaf.com/read/ncnhqmkssbnk
 */ 
 
 #include <avr/io.h>
 #include <avr/interrupt.h>
+#include <avr/pgmspace.h>
+#include <util/delay.h>
 #include <stdio.h>
-#include <string.h> // do czesci 2
+#include <string.h>
+#include <stdlib.h>
+#include "rs232.h"
 #include "twi.h"
 #include "rtc.h"
 #include "lcd.h"
@@ -37,18 +37,24 @@ S8 -> PC0
 #define TURN_ON_LED		(PORTB &= ~(1<<LED))
 #define TURN_OFF_LED	(PORTB |= (1<<LED))
 
+#define BAUD 1000000
+#define UBRR_VALUE (F_CPU/(16*BAUD)-1)
+
 volatile uint8_t update_data_from_ISR = 1, check_buttons = 0, editing_mode = 0;
 volatile uint8_t timer2_counter = 0;
 volatile uint8_t blinds_editing_mode = 0, edited_blinds = 1;
 volatile uint16_t shading_time = 0;
+volatile uint8_t buffor_clear=0;
+volatile uint8_t currently_shaded = 0;
+volatile uint8_t service_shdtime = 20;	// multiply by 0,1s
+volatile uint8_t service_mode = 0;
 
-const uint16_t SHADING = 500;//9546;	// 95,46s for 2m blinds
+const uint16_t SHADING = 9546;	// 95,46s for 2m blinds
 
 uint8_t currently_edited = 0;
 uint8_t step = 0;
 uint8_t direction = 0;
 uint8_t motor_state = 0;
-
 
 struct datetime current_date ={
 	.sec = 	0,		// 5
@@ -59,29 +65,28 @@ struct datetime current_date ={
 	.month = 01,	// 1
 	.year = 21		// 2
 };
-//TODO change to normal hour later like 7:00 up
+
 struct datetime blinds_morning ={
-	.sec = 	30,		
+	.sec = 	0,		
 	.min = 	0,		
-	.hour = 0,		
+	.hour = 7,		
 	.day = 	01,		// not used
 	.weekday = 01,	// not used
 	.month = 01,	// not used
 	.year = 21		// not used
 };
 
-//TODO change to normal hour later like 21:00 down
 struct datetime blinds_night ={
-	.sec = 	40,		
-	.min = 	0,		
-	.hour = 0,		
+	.sec = 	0,		
+	.min = 	30,		
+	.hour = 21,		
 	.day = 	01,		// not used
 	.weekday = 01,	// not used
 	.month = 01,	// not used
 	.year = 21		// not used
 };
 
-ISR(INT0_vect){ //1s
+ISR(INT0_vect){ 	// set to 1s
 	struct datetime dt;
 	rtc_get_date_time(&dt);
 	if(update_data_from_ISR){
@@ -90,17 +95,20 @@ ISR(INT0_vect){ //1s
 		lcd_set_xy(1,0);
 		printf("Time: %02d:%02d:%02d", dt.hour, dt.min, dt.sec);
 	}
-	
-	if(	(dt.hour == blinds_morning.hour) &
-	 		(dt.min == blinds_morning.min) &
-	 		(dt.sec == blinds_morning.sec)){
-		motor_state = 1;
-		direction = 0;
-	} else if((dt.hour == blinds_night.hour) &
-	 		(dt.min == blinds_night.min) &
-	 		(dt.sec == blinds_night.sec)){
-		motor_state = 1;
-		direction = 1;
+	if(service_mode == 0){
+		if(	(dt.hour == blinds_morning.hour) &
+				(dt.min == blinds_morning.min) &
+				(dt.sec == blinds_morning.sec)){
+			motor_state = 1;
+			direction = 0;
+			currently_shaded = 0;
+		} else if((dt.hour == blinds_night.hour) &
+				(dt.min == blinds_night.min) &
+				(dt.sec == blinds_night.sec)){
+			motor_state = 1;
+			direction = 1;
+			currently_shaded = 1;
+		}
 	}
 }
 
@@ -112,8 +120,16 @@ ISR(TIMER2_COMP_vect){ // set to 0,01s
 		timer2_counter++;
 		check_buttons = 0; 
 	}
-	if(motor_state){
+
+	if(motor_state & (service_mode == 0)){
 		if(shading_time == SHADING){
+			motor_state = 0;
+			shading_time = 0;
+		} else{
+			shading_time++;
+		}
+	} else if(motor_state & (service_mode == 1)){
+		if(shading_time == (10 * service_shdtime)){
 			motor_state = 0;
 			shading_time = 0;
 		} else{
@@ -256,19 +272,26 @@ int main(void){
 	PORTD |= 0xf0;
 
 	//Timer\Counter2 - 0,01s
-	TCCR2 |= (1<<WGM01); //tryb CTC
-	TCCR2 |= (1<<CS22)|(1<<CS21)|(1<<CS20); //preskaler 1024
+	TCCR2 |= (1<<WGM01); // mode CTC
+	TCCR2 |= (1<<CS22)|(1<<CS21)|(1<<CS20); //prescaler 1024
 	OCR2 = 155; 	
 	TIMSK |= (1<<OCIE2);
 
 	lcdinit();
 	I2C_init();
 
+	_delay_ms(1000);
+
 	MCUCR |= (1<<ISC01); 	// falling slope
-	GICR |= (1<<INT0);	// turn INT0 interrupt on
+	GICR |= (1<<INT0);		// turn INT0 interrupt on
 	rtc_init();
 
 	rtc_set_date_time(&current_date);
+	
+	//Initialize RS232
+	USART_init(UBRR_VALUE);
+	USART_send("--- BLINDS AUTOMATION ---\r\n");
+
 	sei();
 
 	while(1){
@@ -333,6 +356,7 @@ int main(void){
 				TURN_ON_LED;
 				if(editing_mode == 1){rtc_set_date_time(&current_date);}
 				currently_edited = 0;
+				editing_mode = 0;
 				blinds_editing_mode = 0;
 				update_data_from_ISR = 1;
 				_delay_ms(100);
@@ -368,6 +392,40 @@ int main(void){
 			PORTD = 0x00;
 		}
 
+		if(end){
+			USART_send("\r\n");
+			if( strncmp((void *) bufforRead, "on", 2) == 0 ){
+				service_mode = 1;
+				USART_send("Service mode enabled. \r\nMotor on \r\n");
+				motor_state = 1;
+			}
+			else if( strncmp((void *) bufforRead, "off", 3) == 0 ){
+				service_mode = 1;
+				USART_send("Motor off \r\n");
+				motor_state = 0;
+			}
+			else if( strncmp((void *) bufforRead, "direction", 9) == 0 ){
+				service_mode = 1;
+				uint8_t tmp_direction = atoi((const char*)bufforRead+10);
+				if( (tmp_direction != 0) & (tmp_direction != 1)){
+					USART_send("Direction not specified.\r\n");
+				} else{
+					direction = tmp_direction;
+					USART_send("Direction specified.\r\n");
+				}	
+			}
+			else if( strncmp((void *) bufforRead, "service-off", 11) == 0 ){
+				USART_send("Service mode off.\r\n");
+				service_mode = 0;
+			}
+			else{
+				USART_send("Wrong command.\r\n");
+				buffor_clear = 1;
+			}
+			end = 0;
+			idx = 0;
+			memset((void *)bufforRead,0,MAXSIZE);
+		}
 	}
 	return 0;
 }

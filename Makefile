@@ -66,7 +66,7 @@ TARGET = main
 
 
 # List C source files here. (C dependencies are automatically generated.)
-SRC = $(TARGET).c lcd.c twi.c rtc.c
+SRC = $(TARGET).c lcd.c twi.c rtc.c rs232.c
 
 
 # List Assembler source files here.

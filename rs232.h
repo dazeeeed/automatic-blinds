@@ -7,9 +7,9 @@
 #define MAXSIZE 32 //max buffor (32)
 
 extern volatile char *bufor;
-extern volatile uint8_t znak;
+extern volatile uint8_t sign;
 extern volatile uint8_t bufforRead[MAXSIZE];
-extern volatile uint8_t indeks;
+extern volatile uint8_t idx;
 extern volatile uint8_t end;
 
 void USART_init(uint8_t ubrr);
